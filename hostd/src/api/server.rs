@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 
 use crate::error::{Error, Result};
+use crate::vmm::{Vmm};
 
 use super::routes::{health::health, vm};
 
@@ -24,10 +25,11 @@ struct AuthState {
 
 pub(crate) struct ApiServer {
     token: Arc<str>,
+    vmm: Arc<dyn Vmm>,
 }
 
 impl ApiServer {
-    pub(crate) fn new() -> Result<Self> {
+    pub(crate) fn new(vmm: Arc<dyn Vmm>) -> Result<Self> {
         let token = std::env::var(API_TOKEN_ENV_VAR)
             .ok()
             .filter(|t| !t.is_empty())
@@ -35,6 +37,7 @@ impl ApiServer {
 
         Ok(Self {
             token: token.into(),
+            vmm,
         })
     }
 

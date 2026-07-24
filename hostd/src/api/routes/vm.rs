@@ -31,6 +31,23 @@ pub(crate) enum VmMode {
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum VmStatus {
+    #[default]
+    Creating,
+    Created,
+    Starting,
+    Started,
+    Pausing,
+    Paused,
+    Suspending,
+    Suspended,
+    Restoring,
+    Destroying,
+    Destroyed,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub(crate) struct VmConfig {
     pub cpus: u32,
     pub memory_mb: u32,
@@ -60,6 +77,7 @@ pub(crate) struct Vm {
     pub image: String,
     pub project: String,
     pub mode: VmMode,
+    pub status: VmStatus,
     pub config: VmConfig,
     #[serde(default)]
     pub tags: Vec<String>,
@@ -72,6 +90,7 @@ pub(crate) struct Vm {
 //   "image": "node-20",
 //   "project": "production",
 //   "mode": "ephemeral",   // "ephemeral" or "permanent" or "schedule"
+//   "status": "running" | "stopped" | "paused" | "creating" | ...
 //   "config": {
 //     "cpus": 2,
 //     "memory_mb": 2048,
@@ -89,9 +108,9 @@ pub(crate) struct Vm {
 //     ],
 //     "cmd": ["node server.js"],
 //     "services": ["redis", "postgres"],
-//     "cron_schedule": "0 0 * * *",
-//     "tags": ["web", "api"]
-//   }
+//     "cron_schedule": "0 0 * * *"
+//   },
+//   "tags": ["web", "api"]
 // }
 pub(crate) async fn create_vm(Json(payload): Json<CreateVmRequest>) -> (StatusCode, Json<Value>) {
     (
@@ -126,6 +145,7 @@ pub(crate) async fn update_vm(
         image: payload.image,
         project: payload.project,
         mode: payload.mode,
+        status: VmStatus::Created,
         config: payload.config,
         tags: Vec::new(),
     };

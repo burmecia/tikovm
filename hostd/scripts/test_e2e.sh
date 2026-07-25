@@ -6,28 +6,64 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 HOSTD_ADDR="127.0.0.1:3000"
 HOSTD_URL="http://${HOSTD_ADDR}"
+HOSTD_PORT="${HOSTD_ADDR##*:}"
 HOSTD_TOKEN="${TIKOVM_HOSTD_API_TOKEN:-xxx}"
 LOG_FILE="$(mktemp -t tikovm-hostd-e2e.XXXXXX.log)"
 
 cleanup() {
 	if [[ -n "${HOSTD_PID:-}" ]]; then
-		kill "${HOSTD_PID}" >/dev/null 2>&1 || true
+		# HOSTD_PID is a process group leader (started via setsid), so kill the
+		# whole group to make sure cargo and the hostd binary it spawns are
+		# both terminated instead of being left behind as orphans.
+		kill -TERM -- "-${HOSTD_PID}" >/dev/null 2>&1 || true
 		wait "${HOSTD_PID}" >/dev/null 2>&1 || true
 	fi
 }
 
 trap cleanup EXIT
 
-"${SCRIPT_DIR}/run_hostd.sh" >"${LOG_FILE}" 2>&1 &
+# Make sure no stale process (e.g. left over from a previous manual run) is
+# already bound to the port, otherwise the readiness check below could pass
+# against that stale server instead of the instance this script starts.
+if fuser -n tcp "${HOSTD_PORT}" >/dev/null 2>&1; then
+	echo "Port ${HOSTD_PORT} is already in use, killing existing listener(s)"
+	fuser -k -n tcp "${HOSTD_PORT}" >/dev/null 2>&1 || true
+	sleep 0.5
+fi
+
+setsid "${SCRIPT_DIR}/run_hostd.sh" >"${LOG_FILE}" 2>&1 &
 HOSTD_PID=$!
 
+echo "Started hostd (PID: ${HOSTD_PID}), logging to ${LOG_FILE}"
+
 # Wait for hostd to be ready
+HOSTD_READY=0
 for _ in {1..50}; do
+	if ! kill -0 "${HOSTD_PID}" >/dev/null 2>&1; then
+		if wait "${HOSTD_PID}"; then
+			hostd_exit_status=0
+		else
+			hostd_exit_status=$?
+		fi
+		echo "run_hostd.sh exited before hostd became ready (exit status ${hostd_exit_status})"
+		echo "--- hostd log ---"
+		cat "${LOG_FILE}" || true
+		exit "${hostd_exit_status}"
+	fi
+
 	if curl -fsS -H "Authorization: Bearer ${HOSTD_TOKEN}" "${HOSTD_URL}/api/health" >/dev/null 2>&1; then
+		HOSTD_READY=1
 		break
 	fi
 	sleep 0.2
 done
+
+if [[ "${HOSTD_READY}" -ne 1 ]]; then
+	echo "hostd did not become ready within timeout"
+	echo "--- hostd log ---"
+	cat "${LOG_FILE}" || true
+	exit 1
+fi
 
 # Create a VM using the hostd API
 curl -fsS \
@@ -36,24 +72,23 @@ curl -fsS \
 	-H "Content-Type: application/json" \
 	-d '{
 		"name": "e2e-vm",
+		"project_id": 123,
+        "mode": "ephemeral",
 		"image": "alpine",
-		"project": "e2e",
-		"mode": "ephemeral",
-		"config": {
-			"cpus": 1,
-			"memory_mb": 512,
-			"disk_size_mb": 1024,
-			"network_config": {
-				"allow_internet": true,
-				"ingress_ports": [],
-				"egress": [],
-				"public_access": false
-			},
-			"ssh_access": false,
-			"env": [],
-			"cmd": [],
-			"services": [],
-			"cron_schedule": null
-		}
+		"cpus": 1,
+		"memory_mb": 512,
+		"disk_size_mb": 1024,
+		"network_config": {
+			"allow_internet": true,
+			"ingress_ports": [],
+			"egress": [],
+			"public_access": false
+		},
+		"ssh_access": false,
+		"env": [],
+		"cmd": [],
+		"services": [],
+		"cron_schedule": null,
+        "tags": []
 	}'
 

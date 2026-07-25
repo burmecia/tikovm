@@ -23,6 +23,13 @@ struct AuthState {
     token: Arc<str>,
 }
 
+/// Shared application state, made available to route handlers.
+/// Add further shared state fields here as needed.
+#[derive(Clone)]
+pub(crate) struct AppState {
+    pub(crate) vmm: Arc<dyn Vmm>,
+}
+
 pub(crate) struct ApiServer {
     token: Arc<str>,
     vmm: Arc<dyn Vmm>,
@@ -62,9 +69,14 @@ impl ApiServer {
     }
 
     fn api_routes(&self) -> Router {
+        let state = AppState {
+            vmm: self.vmm.clone(),
+        };
+
         Router::new()
             .route("/health", get(health))
             .nest("/vms", vm::routes())
+            .with_state(state)
     }
 }
 

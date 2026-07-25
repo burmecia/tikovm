@@ -59,7 +59,7 @@ impl From<&str> for VmId {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub(crate) struct TapName(pub String);
 
@@ -81,17 +81,29 @@ impl From<&str> for TapName {
     }
 }
 
-impl From<VmId> for TapName {
-    fn from(vm_id: VmId) -> Self {
-        let suffix = vm_id.0.strip_prefix("vm-").unwrap_or(&vm_id.0);
+impl From<&VmId> for TapName {
+    fn from(vm_id: &VmId) -> Self {
+        let suffix = vm_id.strip_prefix("vm-").unwrap_or(vm_id.as_ref());
         Self(format!("tap-{suffix}"))
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub(crate) struct NetworkConfig {
+    pub allow_internet: bool,
+    #[serde(default)]
+    pub ingress_ports: Vec<u16>,
+    #[serde(default)]
+    pub egress: Vec<String>,
+    #[serde(default)]
+    pub public_access: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum VmState {
     // --- transitional ---
+    #[default]
     Creating,
     Starting,
     Pausing,
@@ -107,8 +119,40 @@ pub(crate) enum VmState {
     Destroyed,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum VmMode {
+    #[default]
+    Ephemeral,
+    Permanent,
+    Schedule,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct EnvVar {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct VmConfig {
     pub name: String,
     pub project_id: u64,
+    pub mode: VmMode,
+    pub image: String,
+    pub cpus: u32,
+    pub memory_mb: u32,
+    pub disk_size_mb: u32,
+    pub network_config: NetworkConfig,
+    pub ssh_access: bool,
+    #[serde(default)]
+    pub env: Vec<EnvVar>,
+    #[serde(default)]
+    pub cmd: Vec<String>,
+    #[serde(default)]
+    pub services: Vec<String>,
+    #[serde(default)]
+    pub cron_schedule: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }

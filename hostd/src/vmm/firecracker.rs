@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Mutex;
@@ -122,6 +122,9 @@ struct FcVmEntry {
     tap_name: TapName,
     guest_ip: IpAddr,
 
+    /// Configuration for the VM.
+    vm_config: VmConfig,
+
     /// Firecracker API client for this VM.
     api_client: FcApiClient,
 
@@ -175,7 +178,8 @@ impl FirecrackerVmm {
             }
             if Instant::now() > deadline {
                 return Err(Error::vmm(format!(
-                    "Firecracker API socket {} did not appear within 5s", sock_path.display()
+                    "Firecracker API socket {} did not appear within 5s",
+                    sock_path.display()
                 )));
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -199,6 +203,19 @@ impl Vmm for FirecrackerVmm {
                 return Err(e);
             }
         };
+
+        self.vms.lock().unwrap().insert(
+            vm_id.clone(),
+            FcVmEntry {
+                vm_id: vm_id.clone(),
+                state: VmState::Created,
+                tap_name: TapName::from(&vm_id),
+                guest_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                vm_config: config.clone(),
+                api_client: FcApiClient::new(api_sock),
+                fc: Some(child),
+            },
+        );
 
         Ok(vm_id)
     }

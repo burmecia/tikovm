@@ -7,8 +7,8 @@ use std::fs;
 use std::sync::Arc;
 
 //use clap::Parser;
+use tracing::{debug, info, error};
 use tracing_subscriber::{self, EnvFilter};
-use tracing::{debug, info};
 
 use crate::{api::ApiServer, error::Result, vmm::firecracker::FirecrackerVmm};
 
@@ -26,9 +26,16 @@ async fn main() -> Result<()> {
     let api_server = ApiServer::new(Arc::new(fc_vmm))?;
 
     let addr = "0.0.0.0:3000";
-    info!(addr = %addr, run_dir = %RUN_DIR, "Tikovm hostd started");
 
-    api_server.run(addr).await?;
+    match api_server.run(addr).await {
+        Ok(_) => {
+            info!(addr = %addr, run_dir = %RUN_DIR, "Tikovm hostd started");
+        },
+        Err(e) => {
+            error!("Failed to start Tikovm hostd server: {}", e);
+            return Err(e);
+        }
+    }
 
     Ok(())
 }

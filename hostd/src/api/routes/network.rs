@@ -1,19 +1,14 @@
-use axum::{Json, Router, extract::Path, routing::get};
+use axum::{
+    Json, Router,
+    extract::Path,
+    routing::{get, put},
+};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize, Default)]
-pub(crate) struct NetworkConfig {
-    pub allow_internet: bool,
-    #[serde(default)]
-    pub ingress_ports: Vec<u16>,
-    #[serde(default)]
-    pub egress: Vec<String>,
-    #[serde(default)]
-    pub public_access: bool,
-}
+use crate::{api::server::AppState, common::vm::NetworkConfig};
 
 /// Network routes, to be nested under `/vms/{id}/network`.
-pub(crate) fn routes() -> Router {
+pub(crate) fn routes() -> Router<AppState> {
     Router::new().route("/", get(get_network).put(update_network))
 }
 

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 
 use crate::error::{Error, Result};
-use crate::vmm::{Vmm};
+use crate::vmm::Vmm;
 
 use super::routes::{health::health, vm};
 

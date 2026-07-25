@@ -12,11 +12,7 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env()
-                .add_directive("info".parse()?)
-                .add_directive("tower_http=debug".parse()?),
-        )
+        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
         .init();
 
     let firecracker_vmm = FirecrackerVmm::new()?;

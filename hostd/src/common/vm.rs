@@ -1,7 +1,9 @@
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::ops::Deref;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -155,4 +157,16 @@ pub(crate) struct VmConfig {
     pub cron_schedule: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct VmInstance {
+    pub vm_id: VmId,
+    pub state: VmState,
+    pub tap_name: TapName,
+    pub guest_ip: IpAddr,
+    pub error_log: PathBuf,
+
+    /// Configuration for the VM.
+    pub vm_config: VmConfig,
 }

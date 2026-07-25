@@ -16,7 +16,7 @@ use tokio::{
 };
 use tracing::{debug, info};
 
-use crate::common::vm::{TapName, VmConfig, VmId, VmState};
+use crate::common::vm::{TapName, VmConfig, VmId, VmInstance, VmState};
 use crate::error::{Error, Result};
 
 use crate::vmm::Vmm;
@@ -117,14 +117,7 @@ impl FcApiClient {
 }
 
 struct FcVmEntry {
-    vm_id: VmId,
-    state: VmState,
-    tap_name: TapName,
-    guest_ip: IpAddr,
-    error_log: PathBuf,
-
-    /// Configuration for the VM.
-    vm_config: VmConfig,
+    instance: VmInstance,
 
     /// Firecracker API client for this VM.
     api_client: FcApiClient,
@@ -139,7 +132,7 @@ impl FcVmEntry {
     }
 
     fn is_running(&self) -> bool {
-        self.state == VmState::Started && self.fc_process_id().is_some()
+        self.instance.state == VmState::Started && self.fc_process_id().is_some()
     }
 
     fn socket_path(&self) -> &Path {
@@ -218,12 +211,14 @@ impl Vmm for FirecrackerVmm {
         self.vms.lock()?.insert(
             vm_id.clone(),
             FcVmEntry {
-                vm_id: vm_id.clone(),
-                state: VmState::Creating,
-                tap_name: TapName::from(&vm_id),
-                guest_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                error_log: error_log.clone(),
-                vm_config: config.clone(),
+                instance: VmInstance {
+                    vm_id: vm_id.clone(),
+                    state: VmState::Creating,
+                    tap_name: TapName::from(&vm_id),
+                    guest_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                    error_log: error_log.clone(),
+                    vm_config: config.clone(),
+                },
                 api_client: FcApiClient::new(socket_path.clone()),
                 fc: None,
             },
@@ -243,7 +238,7 @@ impl Vmm for FirecrackerVmm {
             .get_mut(&vm_id)
             .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
         vm_entry.fc = Some(child);
-        vm_entry.state = VmState::Created;
+        vm_entry.instance.state = VmState::Created;
 
         Ok(vm_id)
     }

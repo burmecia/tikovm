@@ -1,3 +1,5 @@
+use crate::common::vm::VmState;
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     #[error("IO error: {0}")]
@@ -17,6 +19,9 @@ pub(crate) enum Error {
 
     #[error("vm {0} not found")]
     VmNotFound(String),
+
+    #[error("invalid VM state transition: {from:?} -> {to:?}")]
+    InvalidStateTransition { from: VmState, to: VmState },
 
     #[error("HOSTD_API_TOKEN environment variable must be set to a non-empty value")]
     MissingApiToken,

@@ -127,16 +127,21 @@ struct FcVmEntry {
 }
 
 impl FcVmEntry {
+    fn new(instance: VmInstance) -> Self {
+        let api_client = FcApiClient::new(&instance.socket_path);
+        Self {
+            instance,
+            api_client,
+            fc: None,
+        }
+    }
+
     fn fc_process_id(&self) -> Option<u32> {
         self.fc.as_ref().and_then(|c| c.id())
     }
 
     fn is_running(&self) -> bool {
         self.instance.state == VmState::Started && self.fc_process_id().is_some()
-    }
-
-    fn socket_path(&self) -> &Path {
-        &self.api_client.socket_path
     }
 }
 
@@ -157,14 +162,20 @@ impl FirecrackerVmm {
         })
     }
 
-    fn spawn_fc_process(
-        &self,
-        vm_id: &VmId,
-        error_log: &Path,
-        socket_path: &Path,
-    ) -> Result<process::Child> {
-        let _ = fs::remove_file(socket_path); // clean stale socket
-        let stderr_file = fs::File::create(error_log)?;
+    fn spawn_fc_process(&self, vm_id: &VmId) -> Result<process::Child> {
+        let (socket_path, error_log) = {
+            let vms = self.vms.lock()?;
+            let vm_entry = vms
+                .get(vm_id)
+                .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
+            (
+                vm_entry.instance.socket_path.clone(),
+                vm_entry.instance.error_log.clone(),
+            )
+        };
+
+        let _ = fs::remove_file(&socket_path); // clean stale socket
+        let stderr_file = fs::File::create(&error_log)?;
 
         debug!(vm_id = %vm_id, "spawning Firecracker");
 
@@ -204,28 +215,15 @@ impl FirecrackerVmm {
 #[async_trait]
 impl Vmm for FirecrackerVmm {
     async fn create_vm(&self, config: &VmConfig) -> Result<VmId> {
-        let vm_id = VmId::new_random(config.project_id);
-        let error_log = self.run_dir.join(format!("{vm_id}.stderr.log"));
-        let socket_path = self.run_dir.join(format!("{vm_id}.sock"));
+        let instance = VmInstance::new(config.project_id, &self.run_dir);
+        let vm_id = instance.vm_id.clone();
 
-        self.vms.lock()?.insert(
-            vm_id.clone(),
-            FcVmEntry {
-                instance: VmInstance {
-                    vm_id: vm_id.clone(),
-                    state: VmState::Creating,
-                    tap_name: TapName::from(&vm_id),
-                    guest_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                    error_log: error_log.clone(),
-                    vm_config: config.clone(),
-                },
-                api_client: FcApiClient::new(socket_path.clone()),
-                fc: None,
-            },
-        );
+        self.vms
+            .lock()?
+            .insert(instance.vm_id.clone(), FcVmEntry::new(instance));
 
         // Spawn Firecracker process.
-        let child = match self.spawn_fc_process(&vm_id, &error_log, &socket_path) {
+        let child = match self.spawn_fc_process(&vm_id) {
             Ok(result) => result,
             Err(e) => {
                 self.vms.lock()?.remove(&vm_id);
@@ -238,7 +236,7 @@ impl Vmm for FirecrackerVmm {
             .get_mut(&vm_id)
             .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
         vm_entry.fc = Some(child);
-        vm_entry.instance.state = VmState::Created;
+        vm_entry.instance.state.transition(VmState::Created)?;
 
         Ok(vm_id)
     }

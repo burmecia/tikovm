@@ -121,6 +121,65 @@ pub(crate) enum VmState {
     Destroyed,
 }
 
+impl VmState {
+    /// Stable states are the ones a VM can rest in; transitional states only
+    /// exist while an async VMM operation is in flight.
+    pub(crate) fn is_stable(self) -> bool {
+        use VmState::*;
+        matches!(self, Created | Started | Paused | Suspended | Destroyed)
+    }
+
+    pub(crate) fn is_terminal(self) -> bool {
+        matches!(self, VmState::Destroyed)
+    }
+
+    /// Valid transitions: stable -> transitional -> stable, where the second
+    /// step either completes the operation or rolls back to the previous
+    /// stable state on failure.
+    fn can_transition_to(self, next: VmState) -> bool {
+        use VmState::*;
+        matches!(
+            (self, next),
+            (Creating, Created)
+                | (Creating, Destroyed)
+                | (Created, Starting)
+                | (Created, Destroying)
+                | (Starting, Started)
+                | (Starting, Created)
+                | (Started, Pausing)
+                | (Started, Suspending)
+                | (Started, Destroying)
+                | (Pausing, Paused)
+                | (Pausing, Started)
+                | (Paused, Resuming)
+                | (Paused, Suspending)
+                | (Paused, Destroying)
+                | (Resuming, Started)
+                | (Resuming, Paused)
+                | (Suspending, Suspended)
+                | (Suspending, Started)
+                | (Suspended, Restoring)
+                | (Suspended, Destroying)
+                | (Restoring, Started)
+                | (Restoring, Suspended)
+                | (Destroying, Destroyed)
+        )
+    }
+
+    /// Move to `next`, rejecting transitions outside the state machine.
+    pub(crate) fn transition(&mut self, next: VmState) -> crate::error::Result<()> {
+        if self.can_transition_to(next) {
+            *self = next;
+            Ok(())
+        } else {
+            Err(crate::error::Error::InvalidStateTransition {
+                from: *self,
+                to: next,
+            })
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum VmMode {
@@ -165,8 +224,27 @@ pub(crate) struct VmInstance {
     pub state: VmState,
     pub tap_name: TapName,
     pub guest_ip: IpAddr,
+    pub socket_path: PathBuf,
     pub error_log: PathBuf,
 
     /// Configuration for the VM.
     pub vm_config: VmConfig,
+}
+
+impl VmInstance {
+    pub(crate) fn new(project_id: u64, run_dir: impl AsRef<Path>) -> Self {
+        let vm_id = VmId::new_random(project_id);
+        let socket_path = run_dir.as_ref().join(format!("{vm_id}.sock"));
+        let error_log = run_dir.as_ref().join(format!("{vm_id}.stderr.log"));
+
+        Self {
+            vm_id: vm_id.clone(),
+            state: VmState::Creating,
+            tap_name: TapName::from(&vm_id),
+            guest_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            socket_path,
+            error_log,
+            vm_config: VmConfig::default(),
+        }
+    }
 }

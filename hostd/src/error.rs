@@ -9,6 +9,9 @@ pub(crate) enum Error {
     #[error("tracing_subscriber filter parse: {0}")]
     TracingSubscriberFilterParse(#[from] tracing_subscriber::filter::ParseError),
 
+    #[error("vmm error: {0}")]
+    Vmm(String),
+
     #[error("HOSTD_API_TOKEN environment variable must be set to a non-empty value")]
     MissingApiToken,
     //#[error("{0}")]
@@ -18,6 +21,10 @@ pub(crate) enum Error {
 impl Error {
     pub(crate) fn io_other(msg: impl Into<String>) -> Self {
         Error::Io(std::io::Error::new(std::io::ErrorKind::Other, msg.into()))
+    }
+
+    pub(crate) fn vmm(msg: impl Into<String>) -> Self {
+        Error::Vmm(msg.into())
     }
 }
 

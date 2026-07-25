@@ -43,7 +43,6 @@ impl ApiServer {
 
     pub(crate) async fn run(&self, addr: &str) -> Result<()> {
         let listener = tokio::net::TcpListener::bind(addr).await?;
-        tracing::info!(%addr, "Tikovm hostd API server listening");
 
         let auth_state = AuthState {
             token: self.token.clone(),

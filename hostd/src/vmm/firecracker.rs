@@ -1,12 +1,24 @@
+use std::collections::HashMap;
+use std::env;
+use std::fs;
+use std::net::IpAddr;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
 use async_trait::async_trait;
 use serde_json::{self, Value as JsonValue};
-use std::env;
-use std::path::{Path, PathBuf};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::UnixStream;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::UnixStream,
+    process,
+};
+use tracing::{debug, info};
 
-use crate::common::vm::{VmConfig, VmId};
+use crate::common::vm::{TapName, VmConfig, VmId, VmState};
 use crate::error::{Error, Result};
+
 use crate::vmm::Vmm;
 
 const FIRECRACKER_BIN: &str = "FIRECRACKER_BIN";
@@ -104,26 +116,91 @@ impl FcApiClient {
     }
 }
 
+struct FcVmEntry {
+    vm_id: VmId,
+    state: VmState,
+    tap_name: TapName,
+    guest_ip: IpAddr,
+
+    /// Firecracker API client for this VM.
+    api_client: FcApiClient,
+
+    /// Firecracker child process.
+    fc: Option<tokio::process::Child>,
+}
+
 pub(crate) struct FirecrackerVmm {
     fc_bin: PathBuf,
+    run_dir: PathBuf,
+    vms: Mutex<HashMap<VmId, FcVmEntry>>,
 }
 
 impl FirecrackerVmm {
-    pub(crate) fn new() -> Result<Self> {
+    pub(crate) fn new(run_dir: impl AsRef<Path>) -> Result<Self> {
         let fc_bin = from_path_or_env("firecracker", FIRECRACKER_BIN);
+        debug!(?fc_bin, "Firecracker binary");
+        Ok(Self {
+            fc_bin,
+            run_dir: run_dir.as_ref().to_path_buf(),
+            vms: Mutex::new(HashMap::new()),
+        })
+    }
 
-        tracing::debug!(?fc_bin, "Firecracker binary");
+    fn spawn_fc_process(&self, vm_id: &VmId) -> Result<(process::Child, PathBuf)> {
+        let sock_path = self.run_dir.join(format!("{vm_id}.sock"));
+        let _ = fs::remove_file(&sock_path); // clean stale socket
 
-        Ok(Self { fc_bin })
+        debug!(vm_id = %vm_id, "spawning Firecracker");
+
+        let stderr_path = self.run_dir.join(format!("{vm_id}.stderr.log"));
+        let stderr_file = fs::File::create(&stderr_path)?;
+
+        let child = process::Command::new(&self.fc_bin)
+            .arg("--api-sock")
+            .arg(&sock_path)
+            .arg("--no-seccomp")
+            .arg("--id")
+            .arg(&vm_id)
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(stderr_file))
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| Error::vmm(format!("spawn firecracker: {e}")))?;
+
+        // Wait for the API socket to appear (up to 5s).
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if sock_path.exists() {
+                break;
+            }
+            if Instant::now() > deadline {
+                return Err(Error::vmm(format!(
+                    "Firecracker API socket {} did not appear within 5s", sock_path.display()
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        info!(vm_id = %vm_id, "Firecracker process spawned");
+
+        Ok((child, sock_path))
     }
 }
 
 #[async_trait]
 impl Vmm for FirecrackerVmm {
-    async fn create_vm(&self, config: VmConfig) -> Result<VmId> {
-        // Implement the logic to create a VM using Firecracker
-        // For now, we can return a dummy VM ID
-        Ok(config.vm_id)
+    async fn create_vm(&self, config: &VmConfig) -> Result<VmId> {
+        let vm_id = VmId::new_random(config.project_id);
+
+        // Spawn Firecracker process.
+        let (child, api_sock) = match self.spawn_fc_process(&vm_id) {
+            Ok(result) => result,
+            Err(e) => {
+                return Err(e);
+            }
+        };
+
+        Ok(vm_id)
     }
 }
 

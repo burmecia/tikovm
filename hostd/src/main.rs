@@ -3,11 +3,16 @@ mod common;
 mod error;
 mod vmm;
 
+use std::fs;
+use std::sync::Arc;
+
 //use clap::Parser;
 use tracing_subscriber::{self, EnvFilter};
+use tracing::{debug, info};
 
 use crate::{api::ApiServer, error::Result, vmm::firecracker::FirecrackerVmm};
-use std::sync::Arc;
+
+const RUN_DIR: &str = "/tmp/tikovm";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -15,9 +20,15 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
         .init();
 
-    let firecracker_vmm = FirecrackerVmm::new()?;
-    let api_server = ApiServer::new(Arc::new(firecracker_vmm))?;
+    fs::create_dir_all(RUN_DIR)?;
 
-    api_server.run("0.0.0.0:3000").await?;
+    let fc_vmm = FirecrackerVmm::new(RUN_DIR)?;
+    let api_server = ApiServer::new(Arc::new(fc_vmm))?;
+
+    let addr = "0.0.0.0:3000";
+    info!(addr = %addr, run_dir = %RUN_DIR, "Tikovm hostd started");
+
+    api_server.run(addr).await?;
+
     Ok(())
 }

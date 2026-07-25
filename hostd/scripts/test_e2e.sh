@@ -66,7 +66,7 @@ if [[ "${HOSTD_READY}" -ne 1 ]]; then
 fi
 
 # Create a VM using the hostd API
-curl -fsS \
+CREATE_RESPONSE="$(curl -fsS \
 	-X POST "${HOSTD_URL}/api/vms" \
 	-H "Authorization: Bearer ${HOSTD_TOKEN}" \
 	-H "Content-Type: application/json" \
@@ -90,5 +90,53 @@ curl -fsS \
 		"services": [],
 		"cron_schedule": null,
         "tags": []
-	}'
+	}')"
+
+echo "Create response: ${CREATE_RESPONSE}"
+
+VM_ID="$(jq -r '.id' <<<"${CREATE_RESPONSE}")"
+if [[ -z "${VM_ID}" || "${VM_ID}" == "null" ]]; then
+	echo "Failed to extract vm id from create response"
+	exit 1
+fi
+echo "Created VM: ${VM_ID}"
+
+# Delete the VM, expecting 204 No Content
+DELETE_CODE="$(curl -sS -o /dev/null -w '%{http_code}' \
+	-X DELETE "${HOSTD_URL}/api/vms/${VM_ID}" \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}")"
+if [[ "${DELETE_CODE}" != "204" ]]; then
+	echo "Expected 204 from delete, got ${DELETE_CODE}"
+	exit 1
+fi
+echo "Deleted VM ${VM_ID} (HTTP ${DELETE_CODE})"
+
+# The VM's runtime artifacts should be cleaned up
+if [[ -e "/tmp/tikovm/${VM_ID}.sock" ]]; then
+	echo "Firecracker socket /tmp/tikovm/${VM_ID}.sock was not cleaned up"
+	exit 1
+fi
+
+# Deleting the same VM again should fail with a uniform 404 JSON error
+DELETE_AGAIN_RESPONSE="$(curl -sS -w '\n%{http_code}' \
+	-X DELETE "${HOSTD_URL}/api/vms/${VM_ID}" \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}")"
+DELETE_AGAIN_CODE="${DELETE_AGAIN_RESPONSE##*$'\n'}"
+DELETE_AGAIN_BODY="${DELETE_AGAIN_RESPONSE%$'\n'*}"
+
+if [[ "${DELETE_AGAIN_CODE}" != "404" ]]; then
+	echo "Expected 404 when deleting a missing vm, got ${DELETE_AGAIN_CODE}"
+	echo "${DELETE_AGAIN_BODY}"
+	exit 1
+fi
+
+ERROR_CODE="$(jq -r '.error.code' <<<"${DELETE_AGAIN_BODY}")"
+ERROR_MESSAGE="$(jq -r '.error.message' <<<"${DELETE_AGAIN_BODY}")"
+if [[ "${ERROR_CODE}" != "404" || -z "${ERROR_MESSAGE}" || "${ERROR_MESSAGE}" == "null" ]]; then
+	echo "Unexpected error body: ${DELETE_AGAIN_BODY}"
+	exit 1
+fi
+echo "Second delete returned expected 404 JSON error: ${DELETE_AGAIN_BODY}"
+
+echo "e2e test passed"
 

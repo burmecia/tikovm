@@ -12,7 +12,7 @@ use crate::{
         error::{ApiJson, ApiResult},
         server::AppState,
     },
-    common::vm::{EnvVar, NetworkConfig, VmConfig, VmMode, VmState},
+    common::vm::{EnvVar, NetworkConfig, VmConfig, VmId, VmMode, VmState},
 };
 
 use super::network::{self};
@@ -66,11 +66,11 @@ pub(crate) async fn update_vm(
     Json(json!({ "status": "not implemented", "vm": vm }))
 }
 
-/// Stub: delete a vm by id.
+/// Delete a vm by id.
 pub(crate) async fn delete_vm(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
-) -> StatusCode {
-    tracing::debug!(%id, "delete_vm stub called");
-    StatusCode::NO_CONTENT
+) -> ApiResult<StatusCode> {
+    state.vmm.destroy_vm(&VmId(id)).await?;
+    Ok(StatusCode::NO_CONTENT)
 }

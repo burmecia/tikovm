@@ -107,14 +107,33 @@ GET_RESPONSE="$(curl -fsS \
 	"${HOSTD_URL}/api/vms/${VM_ID}")"
 echo "Get response: ${GET_RESPONSE}"
 
-GET_ID="$(jq -r '.id' <<<"${GET_RESPONSE}")"
-GET_STATUS="$(jq -r '.status' <<<"${GET_RESPONSE}")"
-GET_NAME="$(jq -r '.config.name' <<<"${GET_RESPONSE}")"
+GET_ID="$(jq -r '.vm_id' <<<"${GET_RESPONSE}")"
+GET_STATUS="$(jq -r '.state' <<<"${GET_RESPONSE}")"
+GET_NAME="$(jq -r '.vm_config.name' <<<"${GET_RESPONSE}")"
 if [[ "${GET_ID}" != "${VM_ID}" || "${GET_STATUS}" != "created" || "${GET_NAME}" != "e2e-vm" ]]; then
 	echo "Unexpected get response: ${GET_RESPONSE}"
 	exit 1
 fi
 echo "Got VM ${VM_ID} (status: ${GET_STATUS})"
+
+# List VMs, expecting the created VM to be present
+LIST_RESPONSE="$(curl -fsS \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}" \
+	"${HOSTD_URL}/api/vms")"
+echo "List response: ${LIST_RESPONSE}"
+
+LIST_COUNT="$(jq --arg id "${VM_ID}" '[.[] | select(.vm_id == $id)] | length' <<<"${LIST_RESPONSE}")"
+if [[ "${LIST_COUNT}" != "1" ]]; then
+	echo "Expected VM ${VM_ID} in list response: ${LIST_RESPONSE}"
+	exit 1
+fi
+LIST_STATUS="$(jq -r --arg id "${VM_ID}" '.[] | select(.vm_id == $id) | .state' <<<"${LIST_RESPONSE}")"
+LIST_NAME="$(jq -r --arg id "${VM_ID}" '.[] | select(.vm_id == $id) | .vm_config.name' <<<"${LIST_RESPONSE}")"
+if [[ "${LIST_STATUS}" != "created" || "${LIST_NAME}" != "e2e-vm" ]]; then
+	echo "Unexpected list entry: ${LIST_RESPONSE}"
+	exit 1
+fi
+echo "VM list contains ${VM_ID} (status: ${LIST_STATUS})"
 
 # Delete the VM, expecting 204 No Content
 DELETE_CODE="$(curl -sS -o /dev/null -w '%{http_code}' \
@@ -172,6 +191,17 @@ if [[ "${ERROR_CODE}" != "404" || -z "${ERROR_MESSAGE}" || "${ERROR_MESSAGE}" ==
 	exit 1
 fi
 echo "Second delete returned expected 404 JSON error: ${DELETE_AGAIN_BODY}"
+
+# The deleted VM should no longer be listed
+LIST_AFTER_DELETE="$(curl -fsS \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}" \
+	"${HOSTD_URL}/api/vms")"
+LIST_AFTER_DELETE_COUNT="$(jq 'length' <<<"${LIST_AFTER_DELETE}")"
+if [[ "${LIST_AFTER_DELETE_COUNT}" != "0" ]]; then
+	echo "Expected empty VM list after delete, got: ${LIST_AFTER_DELETE}"
+	exit 1
+fi
+echo "VM list is empty after delete"
 
 echo "e2e test passed"
 

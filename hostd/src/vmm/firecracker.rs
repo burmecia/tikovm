@@ -240,7 +240,16 @@ impl Vmm for FirecrackerVmm {
             .vms
             .lock()?
             .get(vm_id)
-            .map(|entry| Arc::clone(&entry.instance)))
+            .map(|entry| entry.instance.clone()))
+    }
+
+    async fn list_vms(&self) -> Result<Vec<VmInstanceRef>> {
+        Ok(self
+            .vms
+            .lock()?
+            .values()
+            .map(|entry| entry.instance.clone())
+            .collect())
     }
 
     async fn destroy_vm(&self, vm_id: &VmId) -> Result<()> {

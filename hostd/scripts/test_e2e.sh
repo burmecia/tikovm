@@ -203,5 +203,4 @@ if [[ "${LIST_AFTER_DELETE_COUNT}" != "0" ]]; then
 fi
 echo "VM list is empty after delete"
 
-echo "e2e test passed"
-
+printf '\ne2e test passed. ✅\n\n'

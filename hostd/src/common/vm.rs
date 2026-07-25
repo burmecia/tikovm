@@ -227,6 +227,7 @@ pub(crate) struct VmInstance {
     pub guest_ip: IpAddr,
     pub socket_path: PathBuf,
     pub error_log: PathBuf,
+    pub created_at: chrono::DateTime<chrono::Utc>,
 
     /// Configuration for the VM.
     pub vm_config: VmConfig,
@@ -245,6 +246,7 @@ impl VmInstance {
             guest_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             socket_path,
             error_log,
+            created_at: chrono::Utc::now(),
             vm_config: config.clone(),
         }
     }

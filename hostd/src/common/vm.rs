@@ -236,7 +236,7 @@ pub(crate) struct VmInstance {
 impl VmInstance {
     pub(crate) fn new(config: &VmConfig, run_dir: impl AsRef<Path>) -> Self {
         let vm_id = VmId::new_random(config.project_id);
-        let socket_path = run_dir.as_ref().join(format!("{vm_id}.sock"));
+        let socket_path = run_dir.as_ref().join(format!("{vm_id}.socket"));
         let error_log = run_dir.as_ref().join(format!("{vm_id}.stderr.log"));
 
         Self {

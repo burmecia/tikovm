@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde_json::json;
+use std::sync::PoisonError;
 
 use crate::error::Error;
 
@@ -44,6 +45,12 @@ impl From<Error> for ApiError {
 impl From<JsonRejection> for ApiError {
     fn from(rejection: JsonRejection) -> Self {
         Self::new(rejection.status(), rejection.body_text())
+    }
+}
+
+impl<T> From<PoisonError<T>> for ApiError {
+    fn from(err: PoisonError<T>) -> Self {
+        ApiError::internal(err.to_string())
     }
 }
 

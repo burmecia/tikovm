@@ -13,6 +13,7 @@ use crate::{
         server::AppState,
     },
     common::vm::{EnvVar, NetworkConfig, VmConfig, VmId, VmMode, VmState},
+    error::Error,
 };
 
 use super::network::{self};
@@ -50,10 +51,22 @@ pub(crate) async fn list_vms(State(_state): State<AppState>) -> Json<Value> {
     Json(json!({ "status": "not implemented", "vms": vms }))
 }
 
-/// Stub: get a single vm by id.
-pub(crate) async fn get_vm(State(_state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
-    let vm = VmResponse::default();
-    Json(json!({ "status": "not implemented", "vm": vm }))
+/// Get a single vm by id.
+pub(crate) async fn get_vm(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<VmResponse>> {
+    let vm_instance_ref = state
+        .vmm
+        .get_vm(&VmId(id.clone()))
+        .await?
+        .ok_or(Error::VmNotFound(id))?;
+    let vm_instance = vm_instance_ref.lock()?;
+    Ok(Json(VmResponse {
+        id: vm_instance.vm_id.to_string(),
+        status: vm_instance.state,
+        config: vm_instance.vm_config.clone(),
+    }))
 }
 
 /// Stub: update a vm by id.

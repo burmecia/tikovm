@@ -4,6 +4,7 @@ use std::ffi::OsStr;
 use std::net::{IpAddr, Ipv4Addr};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -232,8 +233,8 @@ pub(crate) struct VmInstance {
 }
 
 impl VmInstance {
-    pub(crate) fn new(project_id: u64, run_dir: impl AsRef<Path>) -> Self {
-        let vm_id = VmId::new_random(project_id);
+    pub(crate) fn new(config: &VmConfig, run_dir: impl AsRef<Path>) -> Self {
+        let vm_id = VmId::new_random(config.project_id);
         let socket_path = run_dir.as_ref().join(format!("{vm_id}.sock"));
         let error_log = run_dir.as_ref().join(format!("{vm_id}.stderr.log"));
 
@@ -244,7 +245,13 @@ impl VmInstance {
             guest_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             socket_path,
             error_log,
-            vm_config: VmConfig::default(),
+            vm_config: config.clone(),
         }
     }
+
+    pub(crate) fn into_ref(self) -> VmInstanceRef {
+        Arc::new(Mutex::new(self))
+    }
 }
+
+pub(crate) type VmInstanceRef = Arc<Mutex<VmInstance>>;

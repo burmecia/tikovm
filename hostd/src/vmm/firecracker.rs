@@ -4,7 +4,7 @@ use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -16,7 +16,7 @@ use tokio::{
 };
 use tracing::{debug, info};
 
-use crate::common::vm::{TapName, VmConfig, VmId, VmInstance, VmState};
+use crate::common::vm::{TapName, VmConfig, VmId, VmInstance, VmInstanceRef, VmState};
 use crate::error::{Error, Result};
 
 use crate::vmm::Vmm;
@@ -117,7 +117,7 @@ impl FcApiClient {
 }
 
 struct FcVmEntry {
-    instance: VmInstance,
+    instance: VmInstanceRef,
 
     /// Firecracker API client for this VM.
     api_client: FcApiClient,
@@ -127,8 +127,8 @@ struct FcVmEntry {
 }
 
 impl FcVmEntry {
-    fn new(instance: VmInstance) -> Self {
-        let api_client = FcApiClient::new(&instance.socket_path);
+    fn new(instance: VmInstanceRef) -> Self {
+        let api_client = FcApiClient::new(&instance.lock().unwrap().socket_path);
         Self {
             instance,
             api_client,
@@ -141,7 +141,7 @@ impl FcVmEntry {
     }
 
     fn is_running(&self) -> bool {
-        self.instance.state == VmState::Started && self.fc_process_id().is_some()
+        self.instance.lock().unwrap().state == VmState::Started && self.fc_process_id().is_some()
     }
 }
 
@@ -162,15 +162,13 @@ impl FirecrackerVmm {
         })
     }
 
-    fn spawn_fc_process(&self, vm_id: &VmId) -> Result<process::Child> {
-        let (socket_path, error_log) = {
-            let vms = self.vms.lock()?;
-            let vm_entry = vms
-                .get(vm_id)
-                .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
+    fn spawn_fc_process(&self, instance_ref: VmInstanceRef) -> Result<process::Child> {
+        let (vm_id, socket_path, error_log) = {
+            let instance = instance_ref.lock()?;
             (
-                vm_entry.instance.socket_path.clone(),
-                vm_entry.instance.error_log.clone(),
+                instance.vm_id.clone(),
+                instance.socket_path.clone(),
+                instance.error_log.clone(),
             )
         };
 
@@ -215,30 +213,34 @@ impl FirecrackerVmm {
 #[async_trait]
 impl Vmm for FirecrackerVmm {
     async fn create_vm(&self, config: &VmConfig) -> Result<VmId> {
-        let instance = VmInstance::new(config.project_id, &self.run_dir);
+        let instance = VmInstance::new(config, &self.run_dir);
         let vm_id = instance.vm_id.clone();
+        let instance_ref = instance.into_ref();
 
         self.vms
             .lock()?
-            .insert(instance.vm_id.clone(), FcVmEntry::new(instance));
+            .insert(vm_id.clone(), FcVmEntry::new(instance_ref.clone()));
 
-        // Spawn Firecracker process.
-        let child = match self.spawn_fc_process(&vm_id) {
-            Ok(result) => result,
-            Err(e) => {
-                self.vms.lock()?.remove(&vm_id);
-                return Err(e);
-            }
-        };
+        // Spawn Firecracker before registering the VM, so a spawn failure
+        // leaves nothing behind in the map.
+        let child = self.spawn_fc_process(instance_ref.clone())?;
 
         let mut vms = self.vms.lock()?;
-        let vm_entry = vms
+        let entry = vms
             .get_mut(&vm_id)
             .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
-        vm_entry.fc = Some(child);
-        vm_entry.instance.state.transition(VmState::Created)?;
+        entry.fc = Some(child);
+        instance_ref.lock()?.state.transition(VmState::Created)?;
 
         Ok(vm_id)
+    }
+
+    async fn get_vm(&self, vm_id: &VmId) -> Result<Option<VmInstanceRef>> {
+        Ok(self
+            .vms
+            .lock()?
+            .get(vm_id)
+            .map(|entry| Arc::clone(&entry.instance)))
     }
 
     async fn destroy_vm(&self, vm_id: &VmId) -> Result<()> {

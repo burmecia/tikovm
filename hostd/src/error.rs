@@ -1,4 +1,5 @@
 use crate::common::vm::VmState;
+use std::sync::PoisonError;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -39,8 +40,8 @@ impl Error {
     }
 }
 
-impl<T> From<std::sync::PoisonError<T>> for Error {
-    fn from(err: std::sync::PoisonError<T>) -> Self {
+impl<T> From<PoisonError<T>> for Error {
+    fn from(err: PoisonError<T>) -> Self {
         Error::Lock(err.to_string())
     }
 }

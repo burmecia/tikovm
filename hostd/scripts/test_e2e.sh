@@ -101,6 +101,21 @@ if [[ -z "${VM_ID}" || "${VM_ID}" == "null" ]]; then
 fi
 echo "Created VM: ${VM_ID}"
 
+# Get the VM, expecting its id, state, and config to round-trip
+GET_RESPONSE="$(curl -fsS \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}" \
+	"${HOSTD_URL}/api/vms/${VM_ID}")"
+echo "Get response: ${GET_RESPONSE}"
+
+GET_ID="$(jq -r '.id' <<<"${GET_RESPONSE}")"
+GET_STATUS="$(jq -r '.status' <<<"${GET_RESPONSE}")"
+GET_NAME="$(jq -r '.config.name' <<<"${GET_RESPONSE}")"
+if [[ "${GET_ID}" != "${VM_ID}" || "${GET_STATUS}" != "created" || "${GET_NAME}" != "e2e-vm" ]]; then
+	echo "Unexpected get response: ${GET_RESPONSE}"
+	exit 1
+fi
+echo "Got VM ${VM_ID} (status: ${GET_STATUS})"
+
 # Delete the VM, expecting 204 No Content
 DELETE_CODE="$(curl -sS -o /dev/null -w '%{http_code}' \
 	-X DELETE "${HOSTD_URL}/api/vms/${VM_ID}" \
@@ -110,6 +125,26 @@ if [[ "${DELETE_CODE}" != "204" ]]; then
 	exit 1
 fi
 echo "Deleted VM ${VM_ID} (HTTP ${DELETE_CODE})"
+
+# Getting the deleted VM should fail with a uniform 404 JSON error
+GET_DELETED_RESPONSE="$(curl -sS -w '\n%{http_code}' \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}" \
+	"${HOSTD_URL}/api/vms/${VM_ID}")"
+GET_DELETED_CODE="${GET_DELETED_RESPONSE##*$'\n'}"
+GET_DELETED_BODY="${GET_DELETED_RESPONSE%$'\n'*}"
+
+if [[ "${GET_DELETED_CODE}" != "404" ]]; then
+	echo "Expected 404 when getting a deleted vm, got ${GET_DELETED_CODE}"
+	echo "${GET_DELETED_BODY}"
+	exit 1
+fi
+
+GET_ERROR_CODE="$(jq -r '.error.code' <<<"${GET_DELETED_BODY}")"
+if [[ "${GET_ERROR_CODE}" != "404" ]]; then
+	echo "Unexpected error body: ${GET_DELETED_BODY}"
+	exit 1
+fi
+echo "Get after delete returned expected 404 JSON error: ${GET_DELETED_BODY}"
 
 # The VM's runtime artifacts should be cleaned up
 if [[ -e "/tmp/tikovm/${VM_ID}.sock" ]]; then

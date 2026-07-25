@@ -4,6 +4,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+export FIRECRACKER_BIN="${HOME}/firecracker/build/cargo_target/x86_64-unknown-linux-musl/debug/firecracker"
+
 HOSTD_ADDR="127.0.0.1:3000"
 HOSTD_URL="http://${HOSTD_ADDR}"
 HOSTD_PORT="${HOSTD_ADDR##*:}"

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use serde_json::{self, Value as JsonValue};
+use serde_json::{self, Value as JsonValue, json};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::UnixStream,
@@ -21,7 +21,7 @@ use crate::error::{Error, Result};
 
 use crate::vmm::Vmm;
 
-const FIRECRACKER_BIN: &str = "FIRECRACKER_BIN";
+const ENV_FIRECRACKER_BIN: &str = "FIRECRACKER_BIN";
 
 struct FcApiClient {
     socket_path: PathBuf,
@@ -147,16 +147,18 @@ impl FcVmEntry {
 
 pub(crate) struct FirecrackerVmm {
     fc_bin: PathBuf,
+    assets_dir: PathBuf,
     run_dir: PathBuf,
     vms: Mutex<HashMap<VmId, FcVmEntry>>,
 }
 
 impl FirecrackerVmm {
-    pub(crate) fn new(run_dir: impl AsRef<Path>) -> Result<Self> {
-        let fc_bin = from_path_or_env("firecracker", FIRECRACKER_BIN);
+    pub(crate) fn new(assets_dir: impl AsRef<Path>, run_dir: impl AsRef<Path>) -> Result<Self> {
+        let fc_bin = from_path_or_env("firecracker", ENV_FIRECRACKER_BIN);
         debug!(?fc_bin, "Firecracker binary");
         Ok(Self {
             fc_bin,
+            assets_dir: assets_dir.as_ref().to_path_buf(),
             run_dir: run_dir.as_ref().to_path_buf(),
             vms: Mutex::new(HashMap::new()),
         })
@@ -181,6 +183,7 @@ impl FirecrackerVmm {
             .arg("--api-sock")
             .arg(&socket_path)
             .arg("--no-seccomp")
+            .arg("--enable-pci")
             .arg("--id")
             .arg(&vm_id)
             .stdout(Stdio::null())
@@ -208,6 +211,23 @@ impl FirecrackerVmm {
 
         Ok(child)
     }
+
+    async fn configure_vm(&self, instance_ref: VmInstanceRef) -> Result<()> {
+        let client = FcApiClient::new(&instance_ref.lock()?.socket_path);
+
+        // Configure boot source (kernel + initramfs).
+        let kernel_path = self.assets_dir.join("vmlinux-6.1.bin");
+        let initramfs_path = self.assets_dir.join("initramfs.cpio.gz");
+        let boot_args = "console=ttyS0 reboot=k panic=1 pci=on nomodules";
+        let mut boot_source = json!({
+            "kernel_image_path": kernel_path.to_string_lossy(),
+            "boot_args": boot_args,
+            "initrd_path": initramfs_path.to_string_lossy(),
+        });
+        client.put("/boot-source", &boot_source).await?;
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -224,6 +244,9 @@ impl Vmm for FirecrackerVmm {
         // Spawn Firecracker before registering the VM, so a spawn failure
         // leaves nothing behind in the map.
         let child = self.spawn_fc_process(instance_ref.clone())?;
+
+        // Configure the VM.
+        self.configure_vm(instance_ref.clone()).await?;
 
         let mut vms = self.vms.lock()?;
         let entry = vms
@@ -277,6 +300,10 @@ impl Vmm for FirecrackerVmm {
 }
 
 fn from_path_or_env(binary: &str, env_var: &str) -> PathBuf {
+    if let Some(path) = env::var_os(env_var) {
+        return PathBuf::from(path);
+    }
+
     if let Some(path) = env::var_os("PATH") {
         for dir in env::split_paths(&path) {
             let candidate = dir.join(binary);
@@ -286,8 +313,5 @@ fn from_path_or_env(binary: &str, env_var: &str) -> PathBuf {
         }
     }
 
-    env::var(env_var)
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(binary))
+    PathBuf::from(binary)
 }

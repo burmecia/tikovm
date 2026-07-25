@@ -23,5 +23,9 @@ latest_kernel_key=$(curl -fsSL "$S3?list-type=2&prefix=${CI_ARTIFACTS_PREFIX}${A
   | sort -V \
   | tail -1)
 
-# Download it
-wget -O "$ASSETS_DIR/vmlinux-6.1.bin" "$S3/${latest_kernel_key}"
+# Download it, naming the output after the actual artifact (e.g. vmlinux-6.1.102.bin)
+kernel_name="$(basename "$latest_kernel_key")"
+wget -O "$ASSETS_DIR/${kernel_name}.bin" "$S3/${latest_kernel_key}"
+
+# Stable symlink for consumers (e.g. hostd) that shouldn't care about the version
+ln -sfn "${kernel_name}.bin" "$ASSETS_DIR/vmlinux.bin"

@@ -216,7 +216,7 @@ impl FirecrackerVmm {
         let client = FcApiClient::new(&instance_ref.lock()?.socket_path);
 
         // Configure boot source (kernel + initramfs).
-        let kernel_path = self.assets_dir.join("vmlinux-6.1.bin");
+        let kernel_path = self.assets_dir.join("vmlinux.bin");
         let initramfs_path = self.assets_dir.join("initramfs.cpio.gz");
         let boot_args = "console=ttyS0 reboot=k panic=1 pci=on nomodules";
         let mut boot_source = json!({

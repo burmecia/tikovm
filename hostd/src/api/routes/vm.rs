@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
-    api::server::AppState,
+    api::{
+        error::{ApiJson, ApiResult},
+        server::AppState,
+    },
     common::vm::{EnvVar, NetworkConfig, VmConfig, VmMode, VmState},
 };
 
@@ -32,13 +35,13 @@ pub(crate) struct VmResponse {
 /// Stub: create a new vm.
 pub(crate) async fn create_vm(
     State(state): State<AppState>,
-    Json(payload): Json<VmConfig>,
-) -> (StatusCode, Json<Value>) {
-    let vm_id = state.vmm.create_vm(&payload).await.ok(); // TODO: handle errors
-    (
+    ApiJson(payload): ApiJson<VmConfig>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let vm_id = state.vmm.create_vm(&payload).await?;
+    Ok((
         StatusCode::CREATED,
         Json(json!({ "status": "created", "payload": payload, "id": vm_id })),
-    )
+    ))
 }
 
 /// Stub: list all vms.
@@ -57,7 +60,7 @@ pub(crate) async fn get_vm(State(_state): State<AppState>, Path(id): Path<String
 pub(crate) async fn update_vm(
     State(_state): State<AppState>,
     Path(id): Path<String>,
-    Json(payload): Json<VmConfig>,
+    ApiJson(payload): ApiJson<VmConfig>,
 ) -> Json<Value> {
     let vm = VmResponse::default();
     Json(json!({ "status": "not implemented", "vm": vm }))

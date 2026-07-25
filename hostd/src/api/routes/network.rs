@@ -5,7 +5,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{api::server::AppState, common::vm::NetworkConfig};
+use crate::{
+    api::{error::ApiJson, server::AppState},
+    common::vm::NetworkConfig,
+};
 
 /// Network routes, to be nested under `/vms/{id}/network`.
 pub(crate) fn routes() -> Router<AppState> {
@@ -21,7 +24,7 @@ pub(crate) async fn get_network(Path(vm_id): Path<String>) -> Json<NetworkConfig
 /// Stub: update the network config for a vm.
 pub(crate) async fn update_network(
     Path(vm_id): Path<String>,
-    Json(payload): Json<NetworkConfig>,
+    ApiJson(payload): ApiJson<NetworkConfig>,
 ) -> Json<NetworkConfig> {
     tracing::debug!(%vm_id, "update_network stub called");
     Json(payload)

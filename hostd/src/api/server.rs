@@ -13,6 +13,7 @@ use tower_http::trace::TraceLayer;
 use crate::error::{Error, Result};
 use crate::vmm::Vmm;
 
+use super::error::ApiError;
 use super::routes::{health::health, vm};
 
 // The environment variable name for the API token.
@@ -84,7 +85,7 @@ async fn require_bearer_token(
     State(state): State<AuthState>,
     request: Request<Body>,
     next: Next,
-) -> std::result::Result<Response, StatusCode> {
+) -> std::result::Result<Response, ApiError> {
     let authorized = request
         .headers()
         .get(AUTHORIZATION)
@@ -93,7 +94,10 @@ async fn require_bearer_token(
         .is_some_and(|token| constant_time_eq(token.as_bytes(), state.token.as_bytes()));
 
     if !authorized {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "missing or invalid bearer token",
+        ));
     }
 
     Ok(next.run(request).await)

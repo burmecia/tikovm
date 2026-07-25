@@ -103,7 +103,8 @@ if [[ -z "${VM_ID}" || "${VM_ID}" == "null" ]]; then
 fi
 echo "Created VM: ${VM_ID}"
 
-# Get the VM, expecting its id, state, and config to round-trip
+# Get the VM, expecting its id, state, and config to round-trip. The create
+# endpoint also boots the VM, so the stable state is "started", not "created".
 GET_RESPONSE="$(curl -fsS \
 	-H "Authorization: Bearer ${HOSTD_TOKEN}" \
 	"${HOSTD_URL}/api/vms/${VM_ID}")"
@@ -112,7 +113,7 @@ echo "Get response: ${GET_RESPONSE}"
 GET_ID="$(jq -r '.vm_id' <<<"${GET_RESPONSE}")"
 GET_STATUS="$(jq -r '.state' <<<"${GET_RESPONSE}")"
 GET_NAME="$(jq -r '.vm_config.name' <<<"${GET_RESPONSE}")"
-if [[ "${GET_ID}" != "${VM_ID}" || "${GET_STATUS}" != "created" || "${GET_NAME}" != "e2e-vm" ]]; then
+if [[ "${GET_ID}" != "${VM_ID}" || "${GET_STATUS}" != "started" || "${GET_NAME}" != "e2e-vm" ]]; then
 	echo "Unexpected get response: ${GET_RESPONSE}"
 	exit 1
 fi
@@ -131,7 +132,7 @@ if [[ "${LIST_COUNT}" != "1" ]]; then
 fi
 LIST_STATUS="$(jq -r --arg id "${VM_ID}" '.[] | select(.vm_id == $id) | .state' <<<"${LIST_RESPONSE}")"
 LIST_NAME="$(jq -r --arg id "${VM_ID}" '.[] | select(.vm_id == $id) | .vm_config.name' <<<"${LIST_RESPONSE}")"
-if [[ "${LIST_STATUS}" != "created" || "${LIST_NAME}" != "e2e-vm" ]]; then
+if [[ "${LIST_STATUS}" != "started" || "${LIST_NAME}" != "e2e-vm" ]]; then
 	echo "Unexpected list entry: ${LIST_RESPONSE}"
 	exit 1
 fi

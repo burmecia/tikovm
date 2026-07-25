@@ -6,6 +6,8 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::error::{Error, Result};
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub(crate) struct VmId(pub String);
@@ -219,6 +221,16 @@ pub(crate) struct VmConfig {
     pub tags: Vec<String>,
 }
 
+impl VmConfig {
+    pub(crate) fn rootfs_file(&self) -> Result<String> {
+        match self.image.as_str() {
+            "node-22" => Ok("node-22-rootfs.ext4".to_string()),
+            "ubuntu-24" => Ok("ubuntu-24.04-rootfs.ext4".to_string()),
+            _ => Err(Error::InvalidImage(self.image.clone())),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct VmInstance {
     pub vm_id: VmId,
@@ -226,6 +238,7 @@ pub(crate) struct VmInstance {
     pub tap_name: TapName,
     pub guest_ip: IpAddr,
     pub socket_path: PathBuf,
+    pub serial_log: PathBuf,
     pub error_log: PathBuf,
     pub created_at: chrono::DateTime<chrono::Utc>,
 
@@ -238,6 +251,7 @@ impl VmInstance {
         let vm_id = VmId::new_random(config.project_id);
         let socket_path = run_dir.as_ref().join(format!("{vm_id}.socket"));
         let error_log = run_dir.as_ref().join(format!("{vm_id}.stderr.log"));
+        let serial_log = run_dir.as_ref().join(format!("{vm_id}.serial.log"));
 
         Self {
             vm_id: vm_id.clone(),
@@ -245,6 +259,7 @@ impl VmInstance {
             tap_name: TapName::from(&vm_id),
             guest_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             socket_path,
+            serial_log,
             error_log,
             created_at: chrono::Utc::now(),
             vm_config: config.clone(),

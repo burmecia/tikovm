@@ -76,7 +76,7 @@ CREATE_RESPONSE="$(curl -fsS \
 		"name": "e2e-vm",
 		"project_id": 123,
         "mode": "ephemeral",
-		"image": "alpine",
+		"image": "ubuntu-24",
 		"cpus": 1,
 		"memory_mb": 512,
 		"disk_size_mb": 1024,

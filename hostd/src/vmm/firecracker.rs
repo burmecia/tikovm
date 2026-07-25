@@ -103,6 +103,7 @@ impl FcApiClient {
         if (200..300).contains(&status_code) {
             Ok(body_str)
         } else {
+            debug!("FC API {method} {path} failed: HTTP {status_code}: {body_str}",);
             let msg = serde_json::from_str::<serde_json::Value>(&body_str)
                 .ok()
                 .and_then(|v| {
@@ -120,7 +121,7 @@ struct FcVmEntry {
     instance: VmInstanceRef,
 
     /// Firecracker API client for this VM.
-    api_client: FcApiClient,
+    api_client: Arc<FcApiClient>,
 
     /// Firecracker child process.
     fc: Option<tokio::process::Child>,
@@ -128,7 +129,7 @@ struct FcVmEntry {
 
 impl FcVmEntry {
     fn new(instance: VmInstanceRef) -> Self {
-        let api_client = FcApiClient::new(&instance.lock().unwrap().socket_path);
+        let api_client = Arc::new(FcApiClient::new(&instance.lock().unwrap().socket_path));
         Self {
             instance,
             api_client,
@@ -214,6 +215,12 @@ impl FirecrackerVmm {
 
     async fn configure_vm(&self, instance_ref: VmInstanceRef) -> Result<()> {
         let client = FcApiClient::new(&instance_ref.lock()?.socket_path);
+        let (vm_config, serial_log) = {
+            let instance = instance_ref.lock()?;
+            let vm_config = instance.vm_config.clone();
+            let serial_log = instance.serial_log.clone();
+            (vm_config, serial_log)
+        };
 
         // Configure boot source (kernel + initramfs).
         let kernel_path = self.assets_dir.join("vmlinux.bin");
@@ -225,6 +232,46 @@ impl FirecrackerVmm {
             "initrd_path": initramfs_path.to_string_lossy(),
         });
         client.put("/boot-source", &boot_source).await?;
+
+        // Machine configuration.
+        client
+            .put(
+                "/machine-config",
+                &json!({
+                    "vcpu_count": vm_config.cpus,
+                    "mem_size_mib": vm_config.memory_mb,
+                    "smt": false,
+                    "track_dirty_pages": false,
+                    "huge_pages": "None",
+                }),
+            )
+            .await?;
+
+        // Configure the rootfs drive.
+        let rootfs_path = self.assets_dir.join(vm_config.rootfs_file()?);
+        client
+            .put(
+                "/drives/rootfs",
+                &json!({
+                    "drive_id": "rootfs",
+                    "path_on_host": rootfs_path.to_string_lossy(),
+                    "is_root_device": true,
+                    "is_read_only": true,
+                    "cache_type": "Unsafe",
+                    "io_engine": "Async",
+                }),
+            )
+            .await?;
+
+        // Serial console output.
+        client
+            .put(
+                "/serial",
+                &json!({
+                    "serial_out_path": serial_log.to_string_lossy(),
+                }),
+            )
+            .await?;
 
         Ok(())
     }
@@ -264,6 +311,34 @@ impl Vmm for FirecrackerVmm {
             .lock()?
             .get(vm_id)
             .map(|entry| entry.instance.clone()))
+    }
+
+    async fn start_vm(&self, vm_id: &VmId) -> Result<()> {
+        let (instance_ref, client) = {
+            let vms = self.vms.lock()?;
+            let entry = vms
+                .get(vm_id)
+                .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
+            (entry.instance.clone(), entry.api_client.clone())
+        };
+
+        instance_ref.lock()?.state.transition(VmState::Starting)?;
+
+        // Start the VM via the Firecracker API.
+        match client
+            .put("/actions", &json!({"action_type": "InstanceStart"}))
+            .await
+        {
+            Ok(_) => {
+                instance_ref.lock()?.state.transition(VmState::Started)?;
+            }
+            Err(e) => {
+                instance_ref.lock()?.state.transition(VmState::Created)?;
+                return Err(e);
+            }
+        }
+
+        Ok(())
     }
 
     async fn list_vms(&self) -> Result<Vec<VmInstanceRef>> {

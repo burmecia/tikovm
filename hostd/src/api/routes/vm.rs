@@ -31,6 +31,7 @@ pub(crate) async fn create_vm(
     ApiJson(payload): ApiJson<VmConfig>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     let vm_id = state.vmm.create_vm(&payload).await?;
+    state.vmm.start_vm(&vm_id).await?;
     Ok((
         StatusCode::CREATED,
         Json(json!({ "status": "created", "payload": payload, "id": vm_id })),

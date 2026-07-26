@@ -119,6 +119,19 @@ if [[ "${GET_ID}" != "${VM_ID}" || "${GET_STATUS}" != "started" || "${GET_NAME}"
 fi
 echo "Got VM ${VM_ID} (status: ${GET_STATUS})"
 
+# hostd now waits for Firecracker to report the VM as "Running" before it
+# marks the VM as "started", so once the state above is "started" the
+# Firecracker API on the VM's socket must agree.
+FC_SOCKET="/tmp/tikovm/${VM_ID}.socket"
+FC_INFO="$(curl -fsS --unix-socket "${FC_SOCKET}" http://localhost/)"
+echo "Firecracker instance info: ${FC_INFO}"
+FC_STATE="$(jq -r '.state' <<<"${FC_INFO}")"
+if [[ "${FC_STATE}" != "Running" ]]; then
+	echo "Expected Firecracker state 'Running' for a 'started' VM, got: ${FC_INFO}"
+	exit 1
+fi
+echo "Firecracker reports VM ${VM_ID} as Running"
+
 # Check the serial console output to verify the VM actually boots: the
 # initramfs assembles the overlay root (needs /dev/vda + /dev/vdb) and
 # switch_roots into systemd, which eventually starts a getty on ttyS0.
@@ -198,8 +211,8 @@ fi
 echo "Get after delete returned expected 404 JSON error: ${GET_DELETED_BODY}"
 
 # The VM's runtime artifacts should be cleaned up
-if [[ -e "/tmp/tikovm/${VM_ID}.sock" ]]; then
-	echo "Firecracker socket /tmp/tikovm/${VM_ID}.sock was not cleaned up"
+if [[ -e "/tmp/tikovm/${VM_ID}.socket" ]]; then
+	echo "Firecracker socket /tmp/tikovm/${VM_ID}.socket was not cleaned up"
 	exit 1
 fi
 

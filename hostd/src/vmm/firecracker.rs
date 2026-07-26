@@ -49,6 +49,31 @@ impl FcApiClient {
         Ok(serde_json::from_str(&body_str)?)
     }
 
+    /// Poll the instance info endpoint until Firecracker reports the VM as
+    /// `Running`, i.e. the InstanceStart action has fully taken effect.
+    async fn wait_until_running(&self, timeout: Duration) -> Result<()> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let state = self
+                .get("/")
+                .await?
+                .get("state")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("")
+                .to_string();
+            if state == "Running" {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err(Error::vmm(format!(
+                    "VM did not reach Running state within {}s (last state: {state:?})",
+                    timeout.as_secs()
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     async fn request(&self, method: &str, path: &str, body: Option<&JsonValue>) -> Result<String> {
         let body_str = body.map(|b| b.to_string()).unwrap_or_default();
         let request = format!(
@@ -340,7 +365,17 @@ impl Vmm for FirecrackerVmm {
             .await
         {
             Ok(_) => {
-                instance_ref.lock()?.state.transition(VmState::Started)?;
+                // Make sure the VM actually finished starting before
+                // reporting it as ready to use.
+                match client.wait_until_running(Duration::from_secs(5)).await {
+                    Ok(_) => {
+                        instance_ref.lock()?.state.transition(VmState::Started)?;
+                    }
+                    Err(e) => {
+                        instance_ref.lock()?.state.transition(VmState::Created)?;
+                        return Err(e);
+                    }
+                }
             }
             Err(e) => {
                 instance_ref.lock()?.state.transition(VmState::Created)?;

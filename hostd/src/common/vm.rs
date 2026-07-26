@@ -1,6 +1,7 @@
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
+use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -195,7 +196,7 @@ pub(crate) struct VmSnapshot {
 }
 
 impl VmSnapshot {
-    pub(crate) fn new(vm_id: &VmId, work_dir: impl AsRef<Path>) -> Self {
+    fn new(vm_id: &VmId, work_dir: impl AsRef<Path>) -> Self {
         let state_path = work_dir.as_ref().join(format!("{vm_id}_snapshot.state"));
         let mem_path = work_dir.as_ref().join(format!("{vm_id}_snapshot.mem"));
         Self {
@@ -243,6 +244,7 @@ impl VmConfig {
 pub(crate) struct VmInstance {
     pub vm_id: VmId,
     pub state: VmState,
+    pub work_dir: PathBuf,
 
     // Booting setup
     pub kernel_path: PathBuf,
@@ -278,22 +280,24 @@ impl VmInstance {
         work_dir: impl AsRef<Path>,
     ) -> Result<Self> {
         let vm_id = VmId::new_random(config.project_id);
+        let work_dir = work_dir.as_ref().join(&*vm_id);
 
         let kernel_path = assets_dir.as_ref().join("vmlinux.bin");
         let initramfs_path = assets_dir.as_ref().join("initramfs.cpio.gz");
         let boot_args = "console=ttyS0 reboot=k panic=1 pci=on nomodules".to_string();
 
         let rootfs_path = assets_dir.as_ref().join(config.rootfs_file()?);
-        let overlay_disk = work_dir.as_ref().join(format!("{vm_id}.overlay.ext4"));
+        let overlay_disk = work_dir.join(format!("{vm_id}.overlay.ext4"));
 
-        let socket_path = work_dir.as_ref().join(format!("{vm_id}.socket"));
+        let socket_path = work_dir.join(format!("{vm_id}.socket"));
 
-        let serial_log = work_dir.as_ref().join(format!("{vm_id}.serial.log"));
-        let error_log = work_dir.as_ref().join(format!("{vm_id}.stderr.log"));
+        let serial_log = work_dir.join(format!("{vm_id}.serial.log"));
+        let error_log = work_dir.join(format!("{vm_id}.stderr.log"));
 
         Ok(Self {
             vm_id: vm_id.clone(),
             state: VmState::Creating,
+            work_dir,
             kernel_path,
             initramfs_path,
             boot_args,
@@ -314,15 +318,12 @@ impl VmInstance {
         Arc::new(Mutex::new(self))
     }
 
+    pub(crate) fn new_snapshot(&self) -> VmSnapshot {
+        VmSnapshot::new(&self.vm_id, &self.work_dir)
+    }
+
     pub(crate) fn cleanup_runtime_artifacts(&self) -> Result<()> {
-        let _ = std::fs::remove_file(&self.socket_path);
-        let _ = std::fs::remove_file(&self.serial_log);
-        let _ = std::fs::remove_file(&self.error_log);
-        let _ = std::fs::remove_file(&self.overlay_disk);
-        if let Some(snapshot) = &self.snapshot {
-            let _ = std::fs::remove_file(&snapshot.state_path);
-            let _ = std::fs::remove_file(&snapshot.mem_path);
-        }
+        fs::remove_dir_all(&self.work_dir).ok(); // ignore errors
         Ok(())
     }
 }

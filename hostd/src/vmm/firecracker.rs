@@ -454,7 +454,7 @@ impl Vmm for FirecrackerVmm {
             // snapshot.
             client.patch("/vm", &json!({"state": "Paused"})).await?;
 
-            let snapshot = VmSnapshot::new(vm_id, &self.work_dir);
+            let snapshot = instance_ref.lock()?.new_snapshot();
             client
                 .put(
                     "/snapshot/create",

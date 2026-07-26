@@ -18,6 +18,9 @@ pub(crate) enum Error {
     #[error("vmm error: {0}")]
     Vmm(String),
 
+    #[error("net error: {0}")]
+    Net(String),
+
     #[error("vm {0} not found")]
     VmNotFound(String),
 
@@ -40,6 +43,10 @@ impl Error {
 
     pub(crate) fn vmm(msg: impl Into<String>) -> Self {
         Error::Vmm(msg.into())
+    }
+
+    pub(crate) fn net(msg: impl Into<String>) -> Self {
+        Error::Net(msg.into())
     }
 }
 

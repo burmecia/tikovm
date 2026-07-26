@@ -1,6 +1,7 @@
 mod api;
 mod common;
 mod error;
+mod net;
 mod vmm;
 
 use std::fs;
@@ -10,7 +11,7 @@ use clap::Parser;
 use tracing::{error, info};
 use tracing_subscriber::{self, EnvFilter};
 
-use crate::{api::ApiServer, error::Result, vmm::firecracker::FirecrackerVmm};
+use crate::{api::ApiServer, error::Result, net::NetworkManager, vmm::firecracker::FirecrackerVmm};
 
 #[derive(Parser, Debug)]
 #[command(name = "hostd", about = "Tikovm host daemon")]
@@ -26,6 +27,14 @@ struct Args {
     /// Address for the API server to listen on
     #[arg(long, default_value = "0.0.0.0:3000")]
     api_listen: String,
+
+    /// Supernet (CIDR) from which per-project subnets are carved
+    #[arg(long, default_value = "172.16.0.0/12")]
+    net_supernet: String,
+
+    /// Prefix length of each per-project subnet
+    #[arg(long, default_value_t = 24)]
+    net_subnet_prefix: u8,
 }
 
 #[tokio::main]
@@ -38,7 +47,10 @@ async fn main() -> Result<()> {
 
     fs::create_dir_all(&args.work_dir)?;
 
-    let fc_vmm = FirecrackerVmm::new(&args.assets_dir, &args.work_dir)?;
+    let net_mgr = NetworkManager::new(&args.work_dir, &args.net_supernet, args.net_subnet_prefix)?;
+    net_mgr.reconcile_on_startup()?;
+
+    let fc_vmm = FirecrackerVmm::new(&args.assets_dir, &args.work_dir, Arc::new(net_mgr))?;
     let api_server = ApiServer::new(Arc::new(fc_vmm))?;
 
     let addr = args.api_listen.as_str();

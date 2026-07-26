@@ -29,7 +29,7 @@ trap cleanup EXIT
 # against that stale server instead of the instance this script starts.
 if fuser -n tcp "${HOSTD_PORT}" >/dev/null 2>&1; then
 	echo "Port ${HOSTD_PORT} is already in use, killing existing listener(s)"
-	fuser -k -n tcp "${HOSTD_PORT}" >/dev/null 2>&1 || true
+	fuser -k -n tcp "${HOSTD_PORT}" >/dev/null 2>&1 || sudo fuser -k -n tcp "${HOSTD_PORT}" >/dev/null 2>&1 || true
 	sleep 0.5
 fi
 
@@ -123,7 +123,7 @@ echo "Got VM ${VM_ID} (status: ${GET_STATUS})"
 # marks the VM as "started", so once the state above is "started" the
 # Firecracker API on the VM's socket must agree.
 FC_SOCKET="/tmp/tikovm/${VM_ID}/${VM_ID}.socket"
-FC_INFO="$(curl -fsS --unix-socket "${FC_SOCKET}" http://localhost/)"
+FC_INFO="$(sudo curl -fsS --unix-socket "${FC_SOCKET}" http://localhost/)"
 echo "Firecracker instance info: ${FC_INFO}"
 FC_STATE="$(jq -r '.state' <<<"${FC_INFO}")"
 if [[ "${FC_STATE}" != "Running" ]]; then
@@ -173,7 +173,7 @@ if [[ "${PAUSE_STATUS}" != "paused" ]]; then
 	exit 1
 fi
 
-FC_INFO="$(curl -fsS --unix-socket "${FC_SOCKET}" http://localhost/)"
+FC_INFO="$(sudo curl -fsS --unix-socket "${FC_SOCKET}" http://localhost/)"
 FC_STATE="$(jq -r '.state' <<<"${FC_INFO}")"
 if [[ "${FC_STATE}" != "Paused" ]]; then
 	echo "Expected Firecracker state 'Paused' for a 'paused' VM, got: ${FC_INFO}"
@@ -193,7 +193,7 @@ if [[ "${RESUME_STATUS}" != "started" ]]; then
 	exit 1
 fi
 
-FC_INFO="$(curl -fsS --unix-socket "${FC_SOCKET}" http://localhost/)"
+FC_INFO="$(sudo curl -fsS --unix-socket "${FC_SOCKET}" http://localhost/)"
 FC_STATE="$(jq -r '.state' <<<"${FC_INFO}")"
 if [[ "${FC_STATE}" != "Running" ]]; then
 	echo "Expected Firecracker state 'Running' for a resumed VM, got: ${FC_INFO}"
@@ -288,7 +288,7 @@ if [[ "${RESTORE_STATUS}" != "started" ]]; then
 	exit 1
 fi
 
-FC_INFO="$(curl -fsS --unix-socket "${FC_SOCKET}" http://localhost/)"
+FC_INFO="$(sudo curl -fsS --unix-socket "${FC_SOCKET}" http://localhost/)"
 FC_STATE="$(jq -r '.state' <<<"${FC_INFO}")"
 if [[ "${FC_STATE}" != "Running" ]]; then
 	echo "Expected Firecracker state 'Running' for a restored VM, got: ${FC_INFO}"
@@ -335,6 +335,104 @@ if [[ "${LIST_STATUS}" != "started" || "${LIST_NAME}" != "e2e-vm" ]]; then
 fi
 echo "VM list contains ${VM_ID} (status: ${LIST_STATUS})"
 
+# --- Networking: a second VM in the same project must land in the same ---
+# --- subnet, on the same per-project bridge, with a distinct guest IP.   ---
+NET1_RESPONSE="$(curl -fsS \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}" \
+	"${HOSTD_URL}/api/vms/${VM_ID}")"
+VM1_SUBNET="$(jq -r '.net.subnet' <<<"${NET1_RESPONSE}")"
+VM1_GUEST_IP="$(jq -r '.net.guest_ip' <<<"${NET1_RESPONSE}")"
+VM1_TAP="$(jq -r '.net.tap_name' <<<"${NET1_RESPONSE}")"
+if [[ -z "${VM1_SUBNET}" || "${VM1_SUBNET}" == "null" ]]; then
+	echo "VM ${VM_ID} has no network allocation: ${NET1_RESPONSE}"
+	exit 1
+fi
+
+CREATE2_RESPONSE="$(curl -fsS \
+	-X POST "${HOSTD_URL}/api/vms" \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}" \
+	-H "Content-Type: application/json" \
+	-d '{
+		"name": "e2e-vm-2",
+		"project_id": 123,
+        "mode": "ephemeral",
+		"image": "ubuntu-24",
+		"cpus": 1,
+		"memory_mb": 512,
+		"disk_size_mb": 1024,
+		"network_config": {
+			"allow_internet": true,
+			"ingress_ports": [],
+			"egress": [],
+			"public_access": false
+		},
+		"ssh_access": false,
+		"env": [],
+		"cmd": [],
+		"services": [],
+		"cron_schedule": null,
+        "tags": []
+	}')"
+VM2_ID="$(jq -r '.id' <<<"${CREATE2_RESPONSE}")"
+if [[ -z "${VM2_ID}" || "${VM2_ID}" == "null" ]]; then
+	echo "Failed to extract second vm id from create response: ${CREATE2_RESPONSE}"
+	exit 1
+fi
+
+NET2_RESPONSE="$(curl -fsS \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}" \
+	"${HOSTD_URL}/api/vms/${VM2_ID}")"
+VM2_SUBNET="$(jq -r '.net.subnet' <<<"${NET2_RESPONSE}")"
+VM2_GUEST_IP="$(jq -r '.net.guest_ip' <<<"${NET2_RESPONSE}")"
+VM2_TAP="$(jq -r '.net.tap_name' <<<"${NET2_RESPONSE}")"
+if [[ "${VM2_SUBNET}" != "${VM1_SUBNET}" ]]; then
+	echo "VMs of the same project got different subnets: ${VM1_SUBNET} vs ${VM2_SUBNET}"
+	exit 1
+fi
+if [[ "${VM2_GUEST_IP}" == "${VM1_GUEST_IP}" ]]; then
+	echo "VMs of the same project got the same guest IP: ${VM1_GUEST_IP}"
+	exit 1
+fi
+echo "Both VMs share subnet ${VM1_SUBNET} (guest IPs ${VM1_GUEST_IP}, ${VM2_GUEST_IP})"
+
+# Host topology: one bridge for the project, one TAP per VM enslaved to it.
+BRIDGE="tbr-123"
+if ! ip link show "${BRIDGE}" >/dev/null 2>&1; then
+	echo "Project bridge ${BRIDGE} does not exist"
+	exit 1
+fi
+for TAP in "${VM1_TAP}" "${VM2_TAP}"; do
+	if ! ip link show "${TAP}" >/dev/null 2>&1; then
+		echo "TAP device ${TAP} does not exist"
+		exit 1
+	fi
+	TAP_MASTER="$(ip -o link show "${TAP}" | grep -oP 'master \K\S+' || true)"
+	if [[ "${TAP_MASTER}" != "${BRIDGE}" ]]; then
+		echo "TAP ${TAP} is not enslaved to ${BRIDGE} (master: ${TAP_MASTER:-none})"
+		exit 1
+	fi
+done
+echo "Bridge ${BRIDGE} carries TAPs ${VM1_TAP} and ${VM2_TAP}"
+
+# Deleting the second VM must release its TAP but keep the bridge alive
+# while the first VM still uses it.
+DELETE2_CODE="$(curl -sS -o /dev/null -w '%{http_code}' \
+	-X DELETE "${HOSTD_URL}/api/vms/${VM2_ID}" \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}")"
+if [[ "${DELETE2_CODE}" != "204" ]]; then
+	echo "Expected 204 from deleting ${VM2_ID}, got ${DELETE2_CODE}"
+	exit 1
+fi
+if ip link show "${VM2_TAP}" >/dev/null 2>&1; then
+	echo "TAP ${VM2_TAP} still exists after deleting ${VM2_ID}"
+	exit 1
+fi
+if ! ip link show "${BRIDGE}" >/dev/null 2>&1; then
+	echo "Bridge ${BRIDGE} was torn down while VM ${VM_ID} is still running"
+	exit 1
+fi
+echo "Deleted VM ${VM2_ID}; bridge ${BRIDGE} kept alive for VM ${VM_ID}"
+
 # Delete the VM, expecting 204 No Content
 DELETE_CODE="$(curl -sS -o /dev/null -w '%{http_code}' \
 	-X DELETE "${HOSTD_URL}/api/vms/${VM_ID}" \
@@ -371,6 +469,18 @@ if [[ -e "/tmp/tikovm/${VM_ID}" ]]; then
 	echo "VM work dir /tmp/tikovm/${VM_ID} was not cleaned up"
 	exit 1
 fi
+
+# With the project's last VM gone, its bridge, TAP and subnet must be torn
+# down as well.
+if ip link show "${BRIDGE}" >/dev/null 2>&1; then
+	echo "Bridge ${BRIDGE} still exists after deleting the project's last VM"
+	exit 1
+fi
+if ip link show "${VM1_TAP}" >/dev/null 2>&1; then
+	echo "TAP ${VM1_TAP} still exists after deleting ${VM_ID}"
+	exit 1
+fi
+echo "Bridge ${BRIDGE} and TAP ${VM1_TAP} torn down with the project's last VM"
 
 # Deleting the same VM again should fail with a uniform 404 JSON error
 DELETE_AGAIN_RESPONSE="$(curl -sS -w '\n%{http_code}' \

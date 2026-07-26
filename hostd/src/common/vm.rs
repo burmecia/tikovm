@@ -189,6 +189,63 @@ pub(crate) struct EnvVar {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct VmNet {
+    pub tap_name: TapName,
+    pub guest_ip: IpAddr,
+    pub gateway_ip: IpAddr,
+    // NAT subnet in CIDR notation, e.g. `172.16.5.0/24`.
+    pub subnet: String,
+    // Guest MAC, e.g. `AA:FC:00:00:00:07`.
+    pub guest_mac: String,
+}
+
+impl VmNet {
+    pub(crate) fn new(
+        tap_name: TapName,
+        guest_ip: Ipv4Addr,
+        gateway_ip: Ipv4Addr,
+        subnet: String,
+    ) -> Self {
+        Self {
+            tap_name,
+            guest_ip: IpAddr::V4(guest_ip),
+            gateway_ip: IpAddr::V4(gateway_ip),
+            subnet,
+            guest_mac: guest_mac_from_ip(guest_ip),
+        }
+    }
+
+    /// Prefix length of the subnet CIDR, e.g. 24 for `172.16.5.0/24`.
+    pub(crate) fn prefix_len(&self) -> Result<u8> {
+        self.subnet
+            .split_once('/')
+            .and_then(|(_, prefix)| prefix.parse().ok())
+            .ok_or_else(|| Error::net(format!("invalid subnet CIDR {:?}", self.subnet)))
+    }
+
+    /// Dotted netmask of the subnet, e.g. `255.255.255.0` for a /24.
+    pub(crate) fn netmask(&self) -> Result<Ipv4Addr> {
+        let prefix = self.prefix_len()?;
+        if prefix > 32 {
+            return Err(Error::net(format!("invalid subnet CIDR {:?}", self.subnet)));
+        }
+        let mask = if prefix == 0 {
+            0
+        } else {
+            u32::MAX << (32 - prefix)
+        };
+        Ok(Ipv4Addr::from(mask))
+    }
+}
+
+/// Derive a locally administered guest MAC from the IPv4 address, e.g.
+/// `AA:FC:AC:10:00:02` for `172.16.0.2`. Unique per IP, so unique per VM.
+fn guest_mac_from_ip(ip: Ipv4Addr) -> String {
+    let [a, b, c, d] = ip.octets();
+    format!("AA:FC:{a:02X}:{b:02X}:{c:02X}:{d:02X}")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct VmSnapshot {
     pub state_path: PathBuf,
     pub mem_path: PathBuf,
@@ -245,6 +302,7 @@ pub(crate) struct VmInstance {
     pub vm_id: VmId,
     pub state: VmState,
     pub work_dir: PathBuf,
+    pub socket_path: PathBuf,
 
     // Booting setup
     pub kernel_path: PathBuf,
@@ -255,10 +313,8 @@ pub(crate) struct VmInstance {
     pub rootfs_path: PathBuf, // Read-only rootfs backing the overlayfs lower dir (/dev/vda)
     pub overlay_disk: PathBuf, // Per-VM rw disk backing the overlayfs upper/work dirs (/dev/vdb)
 
-    // Networking setup
-    pub tap_name: TapName,
-    pub guest_ip: IpAddr,
-    pub socket_path: PathBuf,
+    // Networking setup (allocated during create_vm, before Firecracker starts)
+    pub net: Option<VmNet>,
 
     // Snapshot setup
     pub snapshot: Option<VmSnapshot>,
@@ -298,15 +354,14 @@ impl VmInstance {
             vm_id: vm_id.clone(),
             state: VmState::Creating,
             work_dir,
+            socket_path,
             kernel_path,
             initramfs_path,
             boot_args,
             rootfs_path,
             overlay_disk,
             snapshot: None,
-            tap_name: TapName::from(&vm_id),
-            guest_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            socket_path,
+            net: None,
             serial_log,
             error_log,
             created_at: chrono::Utc::now(),

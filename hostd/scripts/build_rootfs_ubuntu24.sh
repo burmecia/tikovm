@@ -58,15 +58,15 @@ systemctl enable serial-getty@ttyS0.service
 sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
 systemctl enable ssh
 
-# Configure static networking for the Firecracker tap interface (see start_vm.sh)
+# Networking: hostd seeds a per-VM static config (Address/Gateway/DNS) into
+# the overlay disk's upper layer at VM creation time; it shadows this file
+# via overlayfs, so keep this free of any hardcoded address.
 mkdir -p /etc/systemd/network
 cat > /etc/systemd/network/20-eth0.network << 'NETWORK'
 [Match]
 Name=eth0
 
 [Network]
-Address=172.16.0.2/24
-Gateway=172.16.0.1
 DNS=1.1.1.1
 NETWORK
 systemctl enable systemd-networkd

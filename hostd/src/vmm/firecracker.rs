@@ -15,8 +15,9 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 
-use crate::common::vm::{VmConfig, VmId, VmInstance, VmInstanceRef, VmSnapshot, VmState};
+use crate::common::vm::{TapName, VmConfig, VmId, VmInstance, VmInstanceRef, VmSnapshot, VmState};
 use crate::error::{Error, Result};
+use crate::net::NetworkManager;
 
 use crate::vmm::Vmm;
 
@@ -166,17 +167,23 @@ pub(crate) struct FirecrackerVmm {
     fc_bin: PathBuf,
     assets_dir: PathBuf,
     work_dir: PathBuf,
+    net_mgr: Arc<NetworkManager>,
     vms: Mutex<HashMap<VmId, FcVmEntry>>,
 }
 
 impl FirecrackerVmm {
-    pub(crate) fn new(assets_dir: impl AsRef<Path>, work_dir: impl AsRef<Path>) -> Result<Self> {
+    pub(crate) fn new(
+        assets_dir: impl AsRef<Path>,
+        work_dir: impl AsRef<Path>,
+        net_mgr: Arc<NetworkManager>,
+    ) -> Result<Self> {
         let fc_bin = from_path_or_env("firecracker", ENV_FIRECRACKER_BIN);
         debug!(?fc_bin, "Firecracker binary");
         Ok(Self {
             fc_bin,
             assets_dir: assets_dir.as_ref().to_path_buf(),
             work_dir: work_dir.as_ref().to_path_buf(),
+            net_mgr,
             vms: Mutex::new(HashMap::new()),
         })
     }
@@ -234,10 +241,23 @@ impl FirecrackerVmm {
         let vm_config = &instance.vm_config;
         let client = FcApiClient::new(&instance.socket_path);
 
-        // Configure boot source (kernel + initramfs).
+        // Configure boot source (kernel + initramfs). The guest IP is passed
+        // as a kernel `ip=` boot arg (the kernel has CONFIG_IP_PNP=y), so
+        // eth0 is configured before init runs — independent of whether the
+        // guest image's network userspace (udev/networkd) works.
+        let boot_args = match &instance.net {
+            Some(net) => format!(
+                "{} ip={}::{}:{}::eth0:off",
+                instance.boot_args,
+                net.guest_ip,
+                net.gateway_ip,
+                net.netmask()?,
+            ),
+            None => instance.boot_args.clone(),
+        };
         let boot_source = json!({
             "kernel_image_path": instance.kernel_path.to_string_lossy(),
-            "boot_args": instance.boot_args,
+            "boot_args": boot_args,
             "initrd_path": instance.initramfs_path.to_string_lossy(),
         });
         client.put("/boot-source", &boot_source).await?;
@@ -299,6 +319,21 @@ impl FirecrackerVmm {
             )
             .await?;
 
+        // Network interface backed by the VM's TAP device.
+        let vm_net = instance.net.clone().ok_or_else(|| {
+            Error::net(format!("vm {} has no network allocation", instance.vm_id))
+        })?;
+        client
+            .put(
+                "/network-interfaces/eth0",
+                &json!({
+                    "iface_id": "eth0",
+                    "guest_mac": vm_net.guest_mac,
+                    "host_dev_name": vm_net.tap_name.to_string(),
+                }),
+            )
+            .await?;
+
         Ok(())
     }
 }
@@ -306,21 +341,43 @@ impl FirecrackerVmm {
 #[async_trait]
 impl Vmm for FirecrackerVmm {
     async fn create_vm(&self, config: &VmConfig) -> Result<VmId> {
-        let instance = VmInstance::new(config, &self.assets_dir, &self.work_dir)?;
+        let mut instance = VmInstance::new(config, &self.assets_dir, &self.work_dir)?;
         let vm_id = instance.vm_id.clone();
         fs::create_dir_all(&instance.work_dir)?;
+
+        // Allocate networking (TAP + guest IP, and on the project's first VM
+        // its bridge + subnet) up front, so a failure below can roll it back.
+        let vm_net = self
+            .net_mgr
+            .allocate(config.project_id, &vm_id, &TapName::from(&vm_id))?;
+        instance.net = Some(vm_net);
         let instance_ref = instance.into_ref();
+
+        // Spawn and configure Firecracker before registering the VM, so a
+        // failure leaves nothing behind in the map.
+        let setup = async {
+            let child = self.spawn_fc_process(instance_ref.clone())?;
+            self.configure_vm(instance_ref.clone()).await?;
+            Ok::<_, Error>(child)
+        }
+        .await;
+
+        let child = match setup {
+            Ok(child) => child,
+            Err(e) => {
+                if let Err(rel_err) = self.net_mgr.release(&vm_id) {
+                    warn!(vm_id = %vm_id, error = %rel_err, "failed to roll back network allocation");
+                }
+                if let Ok(instance) = instance_ref.lock() {
+                    let _ = instance.cleanup_runtime_artifacts();
+                }
+                return Err(e);
+            }
+        };
 
         self.vms
             .lock()?
             .insert(vm_id.clone(), FcVmEntry::new(instance_ref.clone()));
-
-        // Spawn Firecracker before registering the VM, so a spawn failure
-        // leaves nothing behind in the map.
-        let child = self.spawn_fc_process(instance_ref.clone())?;
-
-        // Configure the VM.
-        self.configure_vm(instance_ref.clone()).await?;
 
         let mut vms = self.vms.lock()?;
         let entry = vms
@@ -575,6 +632,13 @@ impl Vmm for FirecrackerVmm {
             if let Err(e) = child.kill().await {
                 debug!(vm_id = %vm_id, error = %e, "failed to kill Firecracker process");
             }
+        }
+
+        // Release the network allocation (TAP + guest IP; bridge + subnet
+        // when this was the project's last VM). Best-effort: host-side
+        // failures are logged by release, not propagated.
+        if let Err(e) = self.net_mgr.release(vm_id) {
+            warn!(vm_id = %vm_id, error = %e, "failed to release network allocation");
         }
 
         // Clean up runtime artifacts.

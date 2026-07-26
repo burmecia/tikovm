@@ -15,7 +15,7 @@ use crate::{
     error::Error,
 };
 
-use super::network::{self};
+use super::{network, workload};
 
 /// VM routes, to be nested under `/vms`.
 pub(crate) fn routes() -> Router<AppState> {
@@ -27,6 +27,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/{id}/snapshot", post(snapshot_vm))
         .route("/{id}/restore", post(restore_vm))
         .nest("/{id}/network", network::routes())
+        .nest("/{id}/workloads", workload::routes())
 }
 
 /// Stub: create a new vm.

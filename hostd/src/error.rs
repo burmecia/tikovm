@@ -24,6 +24,9 @@ pub(crate) enum Error {
     #[error("vm {0} not found")]
     VmNotFound(String),
 
+    #[error("workload {0} not found")]
+    WorkloadNotFound(String),
+
     #[error("invalid VM image: {0}")]
     InvalidImage(String),
 

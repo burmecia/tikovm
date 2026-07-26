@@ -1,4 +1,3 @@
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::fs;
@@ -7,6 +6,7 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use super::utils::random_id;
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -15,15 +15,7 @@ pub(crate) struct VmId(pub String);
 
 impl VmId {
     pub(crate) fn new_random(project_id: u64) -> Self {
-        let mut rng = rand::rng();
-        const ID_CHARSET: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
-        let short_id: String = (0..6)
-            .map(|_| {
-                let idx = rng.random_range(0..ID_CHARSET.len());
-                ID_CHARSET[idx] as char
-            })
-            .collect();
-        Self(format!("vm-{project_id}-{short_id}"))
+        Self(random_id(&format!("vm-{project_id}")))
     }
 }
 
@@ -316,6 +308,10 @@ pub(crate) struct VmInstance {
     // Networking setup (allocated during create_vm, before Firecracker starts)
     pub net: Option<VmNet>,
 
+    // Vsock setup (guest_cid allocated during create_vm, before Firecracker starts)
+    pub guest_cid: Option<u32>,
+    pub vsock_uds_path: PathBuf,
+
     // Snapshot setup
     pub snapshot: Option<VmSnapshot>,
 
@@ -346,6 +342,7 @@ impl VmInstance {
         let overlay_disk = work_dir.join(format!("{vm_id}.overlay.ext4"));
 
         let socket_path = work_dir.join(format!("{vm_id}.socket"));
+        let vsock_uds_path = work_dir.join(format!("{vm_id}.vsock"));
 
         let serial_log = work_dir.join(format!("{vm_id}.serial.log"));
         let error_log = work_dir.join(format!("{vm_id}.stderr.log"));
@@ -362,6 +359,8 @@ impl VmInstance {
             overlay_disk,
             snapshot: None,
             net: None,
+            guest_cid: None,
+            vsock_uds_path,
             serial_log,
             error_log,
             created_at: chrono::Utc::now(),

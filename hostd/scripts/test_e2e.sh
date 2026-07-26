@@ -161,6 +161,119 @@ if [[ "${BOOT_OK}" -ne 1 ]]; then
 fi
 echo "VM ${VM_ID} booted to a login prompt"
 
+# --- Workloads: run commands in the guest via guestd over vsock. ---
+# Start a workload, wait for it to exit, and check its result and logs.
+WL_CREATE="$(curl -fsS \
+	-X POST "${HOSTD_URL}/api/vms/${VM_ID}/workloads" \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}" \
+	-H "Content-Type: application/json" \
+	-d '{"argv":["sh","-c","echo hello; sleep 2; echo done; exit 3"],"env":[],"cwd":null}')"
+echo "Workload create response: ${WL_CREATE}"
+
+WL_ID="$(jq -r '.workload_id' <<<"${WL_CREATE}")"
+if [[ -z "${WL_ID}" || "${WL_ID}" == "null" ]]; then
+	echo "Failed to extract workload id from create response"
+	exit 1
+fi
+
+WL_DONE=0
+for _ in {1..60}; do
+	WL_GET="$(curl -fsS \
+		-H "Authorization: Bearer ${HOSTD_TOKEN}" \
+		"${HOSTD_URL}/api/vms/${VM_ID}/workloads/${WL_ID}")"
+	WL_STATE="$(jq -r '.state' <<<"${WL_GET}")"
+	if [[ "${WL_STATE}" == "exited" ]]; then
+		WL_DONE=1
+		break
+	fi
+	if [[ "${WL_STATE}" == "failed" ]]; then
+		echo "Workload ${WL_ID} failed to start: ${WL_GET}"
+		exit 1
+	fi
+	sleep 0.5
+done
+
+if [[ "${WL_DONE}" -ne 1 ]]; then
+	echo "Workload ${WL_ID} did not exit within timeout (last state: ${WL_STATE})"
+	exit 1
+fi
+
+WL_EXIT_CODE="$(jq -r '.exit_code' <<<"${WL_GET}")"
+if [[ "${WL_EXIT_CODE}" != "3" ]]; then
+	echo "Expected exit_code 3 for workload ${WL_ID}, got: ${WL_GET}"
+	exit 1
+fi
+echo "Workload ${WL_ID} exited with expected exit code 3"
+
+WL_LOGS="$(curl -fsS \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}" \
+	"${HOSTD_URL}/api/vms/${VM_ID}/workloads/${WL_ID}/logs")"
+if ! grep -q "hello" <<<"${WL_LOGS}" || ! grep -q "done" <<<"${WL_LOGS}"; then
+	echo "Workload logs missing expected output: ${WL_LOGS}"
+	exit 1
+fi
+echo "Workload ${WL_ID} logs contain expected output"
+
+# A long-running workload can be stopped, ending up in state "stopped".
+WL2_CREATE="$(curl -fsS \
+	-X POST "${HOSTD_URL}/api/vms/${VM_ID}/workloads" \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}" \
+	-H "Content-Type: application/json" \
+	-d '{"argv":["sleep","300"],"env":[],"cwd":null}')"
+WL2_ID="$(jq -r '.workload_id' <<<"${WL2_CREATE}")"
+if [[ -z "${WL2_ID}" || "${WL2_ID}" == "null" ]]; then
+	echo "Failed to extract workload id from create response: ${WL2_CREATE}"
+	exit 1
+fi
+
+WL2_RUNNING=0
+for _ in {1..20}; do
+	WL2_STATE="$(curl -fsS \
+		-H "Authorization: Bearer ${HOSTD_TOKEN}" \
+		"${HOSTD_URL}/api/vms/${VM_ID}/workloads/${WL2_ID}" | jq -r '.state')"
+	if [[ "${WL2_STATE}" == "running" ]]; then
+		WL2_RUNNING=1
+		break
+	fi
+	sleep 0.5
+done
+if [[ "${WL2_RUNNING}" -ne 1 ]]; then
+	echo "Workload ${WL2_ID} did not reach running state (last state: ${WL2_STATE})"
+	exit 1
+fi
+
+curl -fsS \
+	-X POST "${HOSTD_URL}/api/vms/${VM_ID}/workloads/${WL2_ID}/stop" \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}" >/dev/null
+
+WL2_STOPPED=0
+for _ in {1..20}; do
+	WL2_STATE="$(curl -fsS \
+		-H "Authorization: Bearer ${HOSTD_TOKEN}" \
+		"${HOSTD_URL}/api/vms/${VM_ID}/workloads/${WL2_ID}" | jq -r '.state')"
+	if [[ "${WL2_STATE}" == "stopped" ]]; then
+		WL2_STOPPED=1
+		break
+	fi
+	sleep 0.5
+done
+if [[ "${WL2_STOPPED}" -ne 1 ]]; then
+	echo "Workload ${WL2_ID} did not stop (last state: ${WL2_STATE})"
+	exit 1
+fi
+echo "Workload ${WL2_ID} stopped on request"
+
+# Both workloads are listed for the VM.
+WL_LIST="$(curl -fsS \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}" \
+	"${HOSTD_URL}/api/vms/${VM_ID}/workloads")"
+WL_LIST_COUNT="$(jq 'length' <<<"${WL_LIST}")"
+if [[ "${WL_LIST_COUNT}" != "2" ]]; then
+	echo "Expected 2 workloads in list, got: ${WL_LIST}"
+	exit 1
+fi
+echo "Workload list contains both workloads"
+
 # Pause the VM, expecting the API and Firecracker to agree on the paused state
 PAUSE_RESPONSE="$(curl -fsS \
 	-X POST "${HOSTD_URL}/api/vms/${VM_ID}/pause" \

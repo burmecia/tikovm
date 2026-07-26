@@ -4,8 +4,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ASSETS_DIR="$SCRIPT_DIR/../assets"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 IMAGE="$ASSETS_DIR/ubuntu-24.04-rootfs.ext4"
 ROOTFS=/tmp/rootfs
+
+echo ">>> Build guestd..."
+cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" -p guestd
 
 echo ">>> Install debootstrap..."
 sudo apt update -qq
@@ -19,6 +23,9 @@ mkfs.ext4 "$IMAGE"
 mkdir -p "$ROOTFS"
 sudo umount "$ROOTFS" >/dev/null 2>&1 || true
 sudo mount "$IMAGE" "$ROOTFS"
+
+echo ">>> Install guestd..."
+sudo install -Dm0755 "$REPO_ROOT/target/release/guestd" "$ROOTFS/usr/local/bin/guestd"
 
 echo ">>> Bootstrap Ubuntu 24.04 (Noble)..."
 sudo debootstrap \
@@ -57,6 +64,21 @@ systemctl enable serial-getty@ttyS0.service
 # Set up sshd to allow root login
 sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
 systemctl enable ssh
+
+# guestd: vsock guest agent hostd uses to run workloads inside the guest
+cat > /etc/systemd/system/guestd.service << 'UNIT'
+[Unit]
+Description=tikovm guest agent (vsock workload executor)
+
+[Service]
+ExecStart=/usr/local/bin/guestd
+Restart=on-failure
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl enable guestd
 
 # Networking: hostd seeds a per-VM static config (Address/Gateway/DNS) into
 # the overlay disk's upper layer at VM creation time; it shadows this file

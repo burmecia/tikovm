@@ -1,8 +1,10 @@
 pub(crate) mod firecracker;
+mod vsock;
 
 use async_trait::async_trait;
 
 use crate::common::vm::{VmConfig, VmId, VmInstanceRef, VmSnapshot};
+use crate::common::workload::{Workload, WorkloadId, WorkloadLogEntry, WorkloadSpec};
 use crate::error::Result;
 
 #[async_trait]
@@ -16,4 +18,14 @@ pub(crate) trait Vmm: Send + Sync {
     async fn snapshot_vm(&self, vm_id: &VmId) -> Result<VmSnapshot>;
     async fn restore_vm(&self, vm_id: &VmId) -> Result<()>;
     async fn destroy_vm(&self, vm_id: &VmId) -> Result<()>;
+
+    async fn start_workload(&self, vm_id: &VmId, spec: WorkloadSpec) -> Result<Workload>;
+    async fn stop_workload(&self, vm_id: &VmId, workload_id: &WorkloadId) -> Result<Workload>;
+    async fn list_workloads(&self, vm_id: &VmId) -> Result<Vec<Workload>>;
+    async fn get_workload(&self, vm_id: &VmId, workload_id: &WorkloadId) -> Result<Workload>;
+    async fn workload_logs(
+        &self,
+        vm_id: &VmId,
+        workload_id: &WorkloadId,
+    ) -> Result<Vec<WorkloadLogEntry>>;
 }

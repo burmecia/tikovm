@@ -1,25 +1,30 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde_json::{self, Value as JsonValue, json};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::UnixStream,
     process,
+    sync::mpsc,
 };
 use tracing::{debug, info, warn};
 
 use crate::common::vm::{TapName, VmConfig, VmId, VmInstance, VmInstanceRef, VmSnapshot, VmState};
+use crate::common::workload::{Workload, WorkloadId, WorkloadLogEntry, WorkloadSpec};
 use crate::error::{Error, Result};
 use crate::net::NetworkManager;
 
 use crate::vmm::Vmm;
+use crate::vmm::vsock::{self, GuestConnHandle, GuestEvent, GuestRequest};
 
 const ENV_FIRECRACKER_BIN: &str = "FIRECRACKER_BIN";
 
@@ -150,15 +155,34 @@ struct FcVmEntry {
 
     /// Firecracker child process.
     fc: Option<tokio::process::Child>,
+
+    /// Workloads running (or finished) in this VM via guestd.
+    workloads: HashMap<WorkloadId, Workload>,
+
+    /// Live vsock control connection to guestd, if any.
+    guest_conn: Option<GuestConnHandle>,
+
+    /// Directory holding per-workload log files (`<workload_id>.log`, JSON lines).
+    workloads_dir: PathBuf,
 }
 
 impl FcVmEntry {
     fn new(instance: VmInstanceRef) -> Self {
-        let api_client = Arc::new(FcApiClient::new(&instance.lock().unwrap().socket_path));
+        let (socket_path, workloads_dir) = {
+            let instance = instance.lock().unwrap();
+            (
+                instance.socket_path.clone(),
+                instance.work_dir.join("workloads"),
+            )
+        };
+        let api_client = Arc::new(FcApiClient::new(socket_path));
         Self {
             instance,
             api_client,
             fc: None,
+            workloads: HashMap::new(),
+            guest_conn: None,
+            workloads_dir,
         }
     }
 }
@@ -168,7 +192,9 @@ pub(crate) struct FirecrackerVmm {
     assets_dir: PathBuf,
     work_dir: PathBuf,
     net_mgr: Arc<NetworkManager>,
-    vms: Mutex<HashMap<VmId, FcVmEntry>>,
+    vms: Arc<Mutex<HashMap<VmId, FcVmEntry>>>,
+    /// Next vsock guest CID to hand out (0, 1 and 2 = host are reserved).
+    next_cid: AtomicU32,
 }
 
 impl FirecrackerVmm {
@@ -184,21 +210,24 @@ impl FirecrackerVmm {
             assets_dir: assets_dir.as_ref().to_path_buf(),
             work_dir: work_dir.as_ref().to_path_buf(),
             net_mgr,
-            vms: Mutex::new(HashMap::new()),
+            vms: Arc::new(Mutex::new(HashMap::new())),
+            next_cid: AtomicU32::new(3),
         })
     }
 
     fn spawn_fc_process(&self, instance_ref: VmInstanceRef) -> Result<process::Child> {
-        let (vm_id, socket_path, error_log) = {
+        let (vm_id, socket_path, error_log, vsock_uds_path) = {
             let instance = instance_ref.lock()?;
             (
                 instance.vm_id.clone(),
                 instance.socket_path.clone(),
                 instance.error_log.clone(),
+                instance.vsock_uds_path.clone(),
             )
         };
 
         let _ = fs::remove_file(&socket_path); // clean stale socket
+        let _ = fs::remove_file(&vsock_uds_path); // clean stale vsock UDS
         let stderr_file = fs::File::create(&error_log)?;
 
         debug!(vm_id = %vm_id, "spawning Firecracker");
@@ -319,6 +348,23 @@ impl FirecrackerVmm {
             )
             .await?;
 
+        // Vsock device for the guestd control channel (workload execution).
+        // Firecracker creates a Unix listener at uds_path; hostd connects to
+        // it and issues `CONNECT <port>` to reach guestd inside the guest.
+        let guest_cid = instance
+            .guest_cid
+            .ok_or_else(|| Error::vmm(format!("vm {} has no vsock guest CID", instance.vm_id)))?;
+        client
+            .put(
+                "/vsock",
+                &json!({
+                    "vsock_id": "vsock0",
+                    "guest_cid": guest_cid,
+                    "uds_path": instance.vsock_uds_path.to_string_lossy(),
+                }),
+            )
+            .await?;
+
         // Network interface backed by the VM's TAP device.
         let vm_net = instance.net.clone().ok_or_else(|| {
             Error::net(format!("vm {} has no network allocation", instance.vm_id))
@@ -338,6 +384,226 @@ impl FirecrackerVmm {
     }
 }
 
+/// Guest connection management: a lazily-established, per-VM vsock control
+/// connection to guestd, over which workload requests and events flow.
+impl FirecrackerVmm {
+    /// Get a live vsock connection to the VM's guestd, establishing one if
+    /// needed. Retries for up to a minute: the host-side UDS listener exists
+    /// as soon as Firecracker is configured, but guestd only accepts once the
+    /// guest has booted far enough to start it.
+    async fn guest_conn(&self, vm_id: &VmId) -> Result<GuestConnHandle> {
+        {
+            let vms = self.vms.lock()?;
+            if let Some(handle) = vms
+                .get(vm_id)
+                .and_then(|entry| entry.guest_conn.clone())
+                .filter(|handle| !handle.is_closed())
+            {
+                return Ok(handle);
+            }
+        }
+
+        let (uds_path, instance_ref) = {
+            let vms = self.vms.lock()?;
+            let entry = vms
+                .get(vm_id)
+                .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
+            (
+                entry.instance.lock()?.vsock_uds_path.clone(),
+                entry.instance.clone(),
+            )
+        };
+
+        let mut last_err: Option<Error> = None;
+        for _ in 0..60 {
+            match vsock::connect(&uds_path).await {
+                Ok(stream) => return self.install_guest_conn(vm_id, instance_ref, stream).await,
+                Err(e) => {
+                    last_err = Some(e);
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| Error::vmm("vsock connect failed")))
+    }
+
+    /// Store a freshly connected stream on the VM entry and spawn the task
+    /// driving it, then ask guestd for its workload table so a reconnect
+    /// resyncs state hostd may have missed while disconnected.
+    async fn install_guest_conn(
+        &self,
+        vm_id: &VmId,
+        instance_ref: VmInstanceRef,
+        stream: UnixStream,
+    ) -> Result<GuestConnHandle> {
+        let (tx, rx) = mpsc::channel(64);
+        let handle = GuestConnHandle::new(tx);
+        {
+            let mut vms = self.vms.lock()?;
+            let entry = vms
+                .get_mut(vm_id)
+                .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
+            entry.guest_conn = Some(handle.clone());
+        }
+
+        let workloads_dir = instance_ref.lock()?.work_dir.join("workloads");
+        tokio::spawn(Self::run_guest_conn(
+            vm_id.clone(),
+            Arc::clone(&self.vms),
+            workloads_dir,
+            handle.clone(),
+            stream,
+            rx,
+        ));
+
+        handle.send(GuestRequest::List).await?;
+        Ok(handle)
+    }
+
+    /// Forward requests to and read events from guestd until either side
+    /// drops, then clear the stored handle so the next operation reconnects.
+    async fn run_guest_conn(
+        vm_id: VmId,
+        vms: Arc<Mutex<HashMap<VmId, FcVmEntry>>>,
+        workloads_dir: PathBuf,
+        handle: GuestConnHandle,
+        stream: UnixStream,
+        mut rx: mpsc::Receiver<GuestRequest>,
+    ) {
+        let (read_half, mut write_half) = stream.into_split();
+        let mut lines = BufReader::new(read_half).lines();
+        loop {
+            tokio::select! {
+                line = lines.next_line() => {
+                    match line {
+                        Ok(Some(line)) => match serde_json::from_str::<GuestEvent>(&line) {
+                            Ok(event) => Self::handle_guest_event(&vm_id, &vms, &workloads_dir, event),
+                            Err(e) => warn!(vm_id = %vm_id, error = %e, "malformed event from guestd"),
+                        },
+                        Ok(None) => break, // guestd closed the connection
+                        Err(e) => {
+                            debug!(vm_id = %vm_id, error = %e, "guest connection read error");
+                            break;
+                        }
+                    }
+                }
+                request = rx.recv() => {
+                    match request {
+                        Some(request) => {
+                            let mut buf = match serde_json::to_string(&request) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    warn!(vm_id = %vm_id, error = %e, "failed to serialize guest request");
+                                    continue;
+                                }
+                            };
+                            buf.push('\n');
+                            if let Err(e) = write_half.write_all(buf.as_bytes()).await {
+                                debug!(vm_id = %vm_id, error = %e, "guest connection write error");
+                                break;
+                            }
+                        }
+                        None => break, // all senders dropped
+                    }
+                }
+            }
+        }
+
+        // Clear the stored handle only if it is still this connection's, so a
+        // newer connection installed by a concurrent reconnect survives.
+        if let Ok(mut vms) = vms.lock()
+            && let Some(entry) = vms.get_mut(&vm_id)
+            && entry.guest_conn.as_ref().is_some_and(|h| h.ptr_eq(&handle))
+        {
+            entry.guest_conn = None;
+        }
+        debug!(vm_id = %vm_id, "guest connection closed");
+    }
+
+    fn handle_guest_event(
+        vm_id: &VmId,
+        vms: &Arc<Mutex<HashMap<VmId, FcVmEntry>>>,
+        workloads_dir: &Path,
+        event: GuestEvent,
+    ) {
+        match event {
+            GuestEvent::Started { workload_id, pid } => {
+                debug!(vm_id = %vm_id, workload_id, pid, "workload started in guest");
+                if let Ok(mut vms) = vms.lock()
+                    && let Some(entry) = vms.get_mut(vm_id)
+                    && let Some(wl) = entry.workloads.get_mut(&WorkloadId(workload_id))
+                {
+                    wl.mark_running();
+                }
+            }
+            GuestEvent::Output {
+                workload_id,
+                stream,
+                data,
+            } => {
+                let log_entry = WorkloadLogEntry {
+                    ts: chrono::Utc::now(),
+                    stream,
+                    data,
+                };
+                let log_path = workloads_dir.join(format!("{workload_id}.log"));
+                if let Ok(mut file) = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                    && let Ok(json) = serde_json::to_string(&log_entry)
+                {
+                    let _ = writeln!(file, "{json}");
+                }
+            }
+            GuestEvent::Exited {
+                workload_id,
+                exit_code,
+                signal,
+            } => {
+                debug!(vm_id = %vm_id, workload_id, ?exit_code, ?signal, "workload exited in guest");
+                if let Ok(mut vms) = vms.lock()
+                    && let Some(entry) = vms.get_mut(vm_id)
+                    && let Some(wl) = entry.workloads.get_mut(&WorkloadId(workload_id))
+                {
+                    wl.mark_finished(exit_code, signal);
+                }
+            }
+            GuestEvent::Error {
+                workload_id,
+                message,
+            } => {
+                warn!(vm_id = %vm_id, ?workload_id, message, "guestd error");
+                if let Some(workload_id) = workload_id
+                    && let Ok(mut vms) = vms.lock()
+                    && let Some(entry) = vms.get_mut(vm_id)
+                    && let Some(wl) = entry.workloads.get_mut(&WorkloadId(workload_id))
+                {
+                    wl.mark_failed();
+                }
+            }
+            // Reconcile host state with guestd's table after a reconnect:
+            // workloads hostd still thinks are active may have exited (or
+            // merely started) while the connection was down.
+            GuestEvent::ListResult { workloads } => {
+                if let Ok(mut vms) = vms.lock()
+                    && let Some(entry) = vms.get_mut(vm_id)
+                {
+                    for info in workloads {
+                        if let Some(wl) = entry.workloads.get_mut(&WorkloadId(info.workload_id)) {
+                            match info.state.as_str() {
+                                "running" => wl.mark_running(),
+                                "exited" => wl.mark_finished(info.exit_code, info.signal),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl Vmm for FirecrackerVmm {
     async fn create_vm(&self, config: &VmConfig) -> Result<VmId> {
@@ -351,6 +617,7 @@ impl Vmm for FirecrackerVmm {
             .net_mgr
             .allocate(config.project_id, &vm_id, &TapName::from(&vm_id))?;
         instance.net = Some(vm_net);
+        instance.guest_cid = Some(self.next_cid.fetch_add(1, Ordering::Relaxed));
         let instance_ref = instance.into_ref();
 
         // Spawn and configure Firecracker before registering the VM, so a
@@ -617,6 +884,153 @@ impl Vmm for FirecrackerVmm {
                 Err(e)
             }
         }
+    }
+
+    /// Start a workload in a started VM: send guestd the command and track
+    /// the resulting process's lifecycle and output.
+    async fn start_workload(&self, vm_id: &VmId, spec: WorkloadSpec) -> Result<Workload> {
+        if spec.argv.is_empty() {
+            return Err(Error::vmm("workload argv must not be empty"));
+        }
+
+        {
+            let vms = self.vms.lock()?;
+            let entry = vms
+                .get(vm_id)
+                .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
+            let state = entry.instance.lock()?.state;
+            if state != VmState::Started {
+                return Err(Error::vmm(format!(
+                    "vm {vm_id} is {state:?}; workloads require a started vm"
+                )));
+            }
+            fs::create_dir_all(&entry.workloads_dir)?;
+        }
+
+        let workload = Workload::new(vm_id, spec);
+        // Connecting can take a while on a freshly booted guest (see
+        // guest_conn), so it happens outside the lock.
+        let conn = self.guest_conn(vm_id).await?;
+
+        // Register before sending so an instantly-arriving started event
+        // finds the workload in the map.
+        {
+            let mut vms = self.vms.lock()?;
+            let entry = vms
+                .get_mut(vm_id)
+                .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
+            entry
+                .workloads
+                .insert(workload.workload_id.clone(), workload.clone());
+        }
+
+        let request = GuestRequest::Start {
+            workload_id: workload.workload_id.0.clone(),
+            argv: workload.spec.argv.clone(),
+            env: workload
+                .spec
+                .env
+                .iter()
+                .map(|e| (e.key.clone(), e.value.clone()))
+                .collect(),
+            cwd: workload.spec.cwd.clone(),
+        };
+        if let Err(e) = conn.send(request).await {
+            if let Ok(mut vms) = self.vms.lock()
+                && let Some(entry) = vms.get_mut(vm_id)
+            {
+                entry.workloads.remove(&workload.workload_id);
+            }
+            return Err(e);
+        }
+
+        Ok(workload)
+    }
+
+    /// Ask guestd to stop a running workload (SIGTERM, then SIGKILL after a
+    /// grace period in the guest). The workload lands in `stopped` when the
+    /// exit event arrives.
+    async fn stop_workload(&self, vm_id: &VmId, workload_id: &WorkloadId) -> Result<Workload> {
+        let conn = self.guest_conn(vm_id).await?;
+        {
+            let mut vms = self.vms.lock()?;
+            let entry = vms
+                .get_mut(vm_id)
+                .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
+            let workload = entry
+                .workloads
+                .get_mut(workload_id)
+                .ok_or_else(|| Error::WorkloadNotFound(workload_id.to_string()))?;
+            if !workload.is_active() {
+                return Err(Error::vmm(format!(
+                    "workload {workload_id} is {:?}; only active workloads can be stopped",
+                    workload.state
+                )));
+            }
+            workload.stop_requested = true;
+        }
+        if let Err(e) = conn
+            .send(GuestRequest::Stop {
+                workload_id: workload_id.0.clone(),
+            })
+            .await
+        {
+            if let Ok(mut vms) = self.vms.lock()
+                && let Some(entry) = vms.get_mut(vm_id)
+                && let Some(workload) = entry.workloads.get_mut(workload_id)
+            {
+                workload.stop_requested = false;
+            }
+            return Err(e);
+        }
+        self.get_workload(vm_id, workload_id).await
+    }
+
+    async fn list_workloads(&self, vm_id: &VmId) -> Result<Vec<Workload>> {
+        let vms = self.vms.lock()?;
+        let entry = vms
+            .get(vm_id)
+            .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
+        Ok(entry.workloads.values().cloned().collect())
+    }
+
+    async fn get_workload(&self, vm_id: &VmId, workload_id: &WorkloadId) -> Result<Workload> {
+        let vms = self.vms.lock()?;
+        let entry = vms
+            .get(vm_id)
+            .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
+        entry
+            .workloads
+            .get(workload_id)
+            .cloned()
+            .ok_or_else(|| Error::WorkloadNotFound(workload_id.to_string()))
+    }
+
+    /// Captured stdout/stderr of a workload, in arrival order.
+    async fn workload_logs(
+        &self,
+        vm_id: &VmId,
+        workload_id: &WorkloadId,
+    ) -> Result<Vec<WorkloadLogEntry>> {
+        let log_path = {
+            let vms = self.vms.lock()?;
+            let entry = vms
+                .get(vm_id)
+                .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
+            if !entry.workloads.contains_key(workload_id) {
+                return Err(Error::WorkloadNotFound(workload_id.to_string()));
+            }
+            entry.workloads_dir.join(format!("{workload_id}.log"))
+        };
+        let contents = match fs::read_to_string(&log_path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(contents
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect())
     }
 
     async fn destroy_vm(&self, vm_id: &VmId) -> Result<()> {

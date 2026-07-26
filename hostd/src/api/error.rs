@@ -35,7 +35,9 @@ impl ApiError {
 impl From<Error> for ApiError {
     fn from(err: Error) -> Self {
         match err {
-            Error::VmNotFound(_) => Self::new(StatusCode::NOT_FOUND, err.to_string()),
+            Error::VmNotFound(_) | Error::WorkloadNotFound(_) => {
+                Self::new(StatusCode::NOT_FOUND, err.to_string())
+            }
             // TODO: map other error variants to more specific status codes.
             _ => Self::internal(err.to_string()),
         }

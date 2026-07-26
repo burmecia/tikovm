@@ -119,6 +119,35 @@ if [[ "${GET_ID}" != "${VM_ID}" || "${GET_STATUS}" != "started" || "${GET_NAME}"
 fi
 echo "Got VM ${VM_ID} (status: ${GET_STATUS})"
 
+# Check the serial console output to verify the VM actually boots: the
+# initramfs assembles the overlay root (needs /dev/vda + /dev/vdb) and
+# switch_roots into systemd, which eventually starts a getty on ttyS0.
+SERIAL_LOG="/tmp/tikovm/${VM_ID}.serial.log"
+BOOT_OK=0
+for _ in {1..300}; do
+	if [[ -f "${SERIAL_LOG}" ]]; then
+		if grep -q "dropping to rescue shell" "${SERIAL_LOG}"; then
+			echo "VM boot failed: init dropped to rescue shell"
+			echo "--- serial console log (${SERIAL_LOG}) ---"
+			cat "${SERIAL_LOG}"
+			exit 1
+		fi
+		if grep -q "login:" "${SERIAL_LOG}"; then
+			BOOT_OK=1
+			break
+		fi
+	fi
+	sleep 0.2
+done
+
+if [[ "${BOOT_OK}" -ne 1 ]]; then
+	echo "VM did not reach a login prompt within 60s"
+	echo "--- serial console log (${SERIAL_LOG}) ---"
+	cat "${SERIAL_LOG}" 2>/dev/null || true
+	exit 1
+fi
+echo "VM ${VM_ID} booted to a login prompt"
+
 # List VMs, expecting the created VM to be present
 LIST_RESPONSE="$(curl -fsS \
 	-H "Authorization: Bearer ${HOSTD_TOKEN}" \

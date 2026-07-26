@@ -235,11 +235,25 @@ impl VmConfig {
 pub(crate) struct VmInstance {
     pub vm_id: VmId,
     pub state: VmState,
+
+    // Booting setup
+    pub kernel_path: PathBuf,
+    pub initramfs_path: PathBuf,
+    pub boot_args: String,
+
+    // Storage setup
+    pub rootfs_path: PathBuf, // Read-only rootfs backing the overlayfs lower dir (/dev/vda)
+    pub overlay_disk: PathBuf, // Per-VM rw disk backing the overlayfs upper/work dirs (/dev/vdb)
+
+    // Networking setup
     pub tap_name: TapName,
     pub guest_ip: IpAddr,
     pub socket_path: PathBuf,
+
+    // Logging setup
     pub serial_log: PathBuf,
     pub error_log: PathBuf,
+
     pub created_at: chrono::DateTime<chrono::Utc>,
 
     /// Configuration for the VM.
@@ -247,15 +261,33 @@ pub(crate) struct VmInstance {
 }
 
 impl VmInstance {
-    pub(crate) fn new(config: &VmConfig, run_dir: impl AsRef<Path>) -> Self {
+    pub(crate) fn new(
+        config: &VmConfig,
+        assets_dir: impl AsRef<Path>,
+        run_dir: impl AsRef<Path>,
+    ) -> Result<Self> {
         let vm_id = VmId::new_random(config.project_id);
-        let socket_path = run_dir.as_ref().join(format!("{vm_id}.socket"));
-        let error_log = run_dir.as_ref().join(format!("{vm_id}.stderr.log"));
-        let serial_log = run_dir.as_ref().join(format!("{vm_id}.serial.log"));
 
-        Self {
+        let kernel_path = assets_dir.as_ref().join("vmlinux.bin");
+        let initramfs_path = assets_dir.as_ref().join("initramfs.cpio.gz");
+        let boot_args = "console=ttyS0 reboot=k panic=1 pci=on nomodules".to_string();
+
+        let rootfs_path = assets_dir.as_ref().join(config.rootfs_file()?);
+        let overlay_disk = run_dir.as_ref().join(format!("{vm_id}.overlay.ext4"));
+
+        let socket_path = run_dir.as_ref().join(format!("{vm_id}.socket"));
+
+        let serial_log = run_dir.as_ref().join(format!("{vm_id}.serial.log"));
+        let error_log = run_dir.as_ref().join(format!("{vm_id}.stderr.log"));
+
+        Ok(Self {
             vm_id: vm_id.clone(),
             state: VmState::Creating,
+            kernel_path,
+            initramfs_path,
+            boot_args,
+            rootfs_path,
+            overlay_disk,
             tap_name: TapName::from(&vm_id),
             guest_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             socket_path,
@@ -263,7 +295,7 @@ impl VmInstance {
             error_log,
             created_at: chrono::Utc::now(),
             vm_config: config.clone(),
-        }
+        })
     }
 
     pub(crate) fn into_ref(self) -> VmInstanceRef {

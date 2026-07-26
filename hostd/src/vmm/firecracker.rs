@@ -214,22 +214,15 @@ impl FirecrackerVmm {
     }
 
     async fn configure_vm(&self, instance_ref: VmInstanceRef) -> Result<()> {
-        let client = FcApiClient::new(&instance_ref.lock()?.socket_path);
-        let (vm_config, serial_log) = {
-            let instance = instance_ref.lock()?;
-            let vm_config = instance.vm_config.clone();
-            let serial_log = instance.serial_log.clone();
-            (vm_config, serial_log)
-        };
+        let instance = instance_ref.lock()?.clone();
+        let vm_config = &instance.vm_config;
+        let client = FcApiClient::new(&instance.socket_path);
 
         // Configure boot source (kernel + initramfs).
-        let kernel_path = self.assets_dir.join("vmlinux.bin");
-        let initramfs_path = self.assets_dir.join("initramfs.cpio.gz");
-        let boot_args = "console=ttyS0 reboot=k panic=1 pci=on nomodules";
         let mut boot_source = json!({
-            "kernel_image_path": kernel_path.to_string_lossy(),
-            "boot_args": boot_args,
-            "initrd_path": initramfs_path.to_string_lossy(),
+            "kernel_image_path": instance.kernel_path.to_string_lossy(),
+            "boot_args": instance.boot_args,
+            "initrd_path": instance.initramfs_path.to_string_lossy(),
         });
         client.put("/boot-source", &boot_source).await?;
 
@@ -248,15 +241,32 @@ impl FirecrackerVmm {
             .await?;
 
         // Configure the rootfs drive.
-        let rootfs_path = self.assets_dir.join(vm_config.rootfs_file()?);
         client
             .put(
                 "/drives/rootfs",
                 &json!({
                     "drive_id": "rootfs",
-                    "path_on_host": rootfs_path.to_string_lossy(),
+                    "path_on_host": instance.rootfs_path.to_string_lossy(),
                     "is_root_device": true,
                     "is_read_only": true,
+                    "cache_type": "Unsafe",
+                    "io_engine": "Async",
+                }),
+            )
+            .await?;
+
+        // Per-VM read-write overlay disk (/dev/vdb). The initramfs mounts it
+        // and uses it as the overlayfs upper/work backing store, so it only
+        // needs a fresh empty ext4 filesystem sized per the VM config.
+        create_overlay_disk(&instance.overlay_disk, vm_config.disk_size_mb).await?;
+        client
+            .put(
+                "/drives/overlay",
+                &json!({
+                    "drive_id": "overlay",
+                    "path_on_host": instance.overlay_disk.to_string_lossy(),
+                    "is_root_device": false,
+                    "is_read_only": false,
                     "cache_type": "Unsafe",
                     "io_engine": "Async",
                 }),
@@ -268,7 +278,7 @@ impl FirecrackerVmm {
             .put(
                 "/serial",
                 &json!({
-                    "serial_out_path": serial_log.to_string_lossy(),
+                    "serial_out_path": instance.serial_log.to_string_lossy(),
                 }),
             )
             .await?;
@@ -280,7 +290,7 @@ impl FirecrackerVmm {
 #[async_trait]
 impl Vmm for FirecrackerVmm {
     async fn create_vm(&self, config: &VmConfig) -> Result<VmId> {
-        let instance = VmInstance::new(config, &self.run_dir);
+        let instance = VmInstance::new(config, &self.assets_dir, &self.run_dir)?;
         let vm_id = instance.vm_id.clone();
         let instance_ref = instance.into_ref();
 
@@ -366,12 +376,40 @@ impl Vmm for FirecrackerVmm {
         }
 
         // Clean up runtime artifacts.
-        let _ = fs::remove_file(self.run_dir.join(format!("{vm_id}.sock")));
-        let _ = fs::remove_file(self.run_dir.join(format!("{vm_id}.stderr.log")));
+        let instance = entry.instance.lock()?;
+        let _ = fs::remove_file(&instance.socket_path);
+        let _ = fs::remove_file(&instance.error_log);
+        let _ = fs::remove_file(&instance.overlay_disk);
 
         info!(vm_id = %vm_id, "VM destroyed");
+
         Ok(())
     }
+}
+
+/// Create a fresh ext4 disk image of `size_mb` at `path` for the VM's
+/// overlayfs upper/work backing store. The file is sparse, so only the
+/// filesystem metadata actually consumes host disk space.
+async fn create_overlay_disk(path: &Path, size_mb: u32) -> Result<()> {
+    let file = fs::File::create(path)?;
+    file.set_len(u64::from(size_mb) * 1024 * 1024)?;
+    drop(file);
+
+    let status = process::Command::new("mkfs.ext4")
+        .args(["-F", "-q", "-m", "0"])
+        .arg(path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map_err(|e| Error::vmm(format!("spawn mkfs.ext4: {e}")))?;
+    if !status.success() {
+        return Err(Error::vmm(format!(
+            "mkfs.ext4 {} failed: {status}",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn from_path_or_env(binary: &str, env_var: &str) -> PathBuf {

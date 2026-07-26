@@ -13,9 +13,9 @@ use tokio::{
     net::UnixStream,
     process,
 };
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
-use crate::common::vm::{VmConfig, VmId, VmInstance, VmInstanceRef, VmState};
+use crate::common::vm::{VmConfig, VmId, VmInstance, VmInstanceRef, VmSnapshot, VmState};
 use crate::error::{Error, Result};
 
 use crate::vmm::Vmm;
@@ -436,6 +436,129 @@ impl Vmm for FirecrackerVmm {
         }
 
         Ok(())
+    }
+
+    async fn snapshot_vm(&self, vm_id: &VmId) -> Result<VmSnapshot> {
+        let (instance_ref, client) = {
+            let vms = self.vms.lock()?;
+            let entry = vms
+                .get(vm_id)
+                .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
+            (entry.instance.clone(), entry.api_client.clone())
+        };
+
+        instance_ref.lock()?.state.transition(VmState::Suspending)?;
+
+        let result = async {
+            // Firecracker requires the VM to be paused before taking a
+            // snapshot.
+            client.patch("/vm", &json!({"state": "Paused"})).await?;
+
+            let snapshot = VmSnapshot::new(vm_id, &self.work_dir);
+            client
+                .put(
+                    "/snapshot/create",
+                    &json!({
+                        "snapshot_type": "Full",
+                        "snapshot_path": snapshot.state_path.to_string_lossy(),
+                        "mem_file_path": snapshot.mem_path.to_string_lossy(),
+                    }),
+                )
+                .await?;
+
+            Ok::<_, Error>(snapshot)
+        }
+        .await;
+
+        match result {
+            Ok(snapshot) => {
+                // Stop the Firecracker process so a suspended VM consumes no
+                // resources; the snapshot files on disk are what the
+                // Suspended state rests on. Restore spawns a fresh process.
+                let old_child = self
+                    .vms
+                    .lock()?
+                    .get_mut(vm_id)
+                    .and_then(|entry| entry.fc.take());
+                if let Some(mut child) = old_child {
+                    if let Err(e) = child.kill().await {
+                        warn!(vm_id = %vm_id, error = %e, "failed to kill Firecracker process after snapshotting");
+                    }
+                }
+
+                let mut instance = instance_ref.lock()?;
+                let _ = fs::remove_file(&instance.socket_path);
+                instance.snapshot = Some(snapshot.clone());
+                instance.state.transition(VmState::Suspended)?;
+                info!(vm_id = %vm_id, "VM snapshot created");
+                Ok(snapshot)
+            }
+            Err(e) => {
+                // Best effort: bring the VM back to Running so the rollback
+                // to Started reflects reality.
+                let _ = client.patch("/vm", &json!({"state": "Resumed"})).await;
+                instance_ref.lock()?.state.transition(VmState::Started)?;
+                Err(e)
+            }
+        }
+    }
+
+    async fn restore_vm(&self, vm_id: &VmId) -> Result<()> {
+        let (instance_ref, client, snapshot) = {
+            let vms = self.vms.lock()?;
+            let entry = vms
+                .get(vm_id)
+                .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
+            let snapshot = entry
+                .instance
+                .lock()?
+                .snapshot
+                .clone()
+                .ok_or_else(|| Error::vmm(format!("vm {vm_id} has no snapshot")))?;
+            (entry.instance.clone(), entry.api_client.clone(), snapshot)
+        };
+
+        instance_ref.lock()?.state.transition(VmState::Restoring)?;
+
+        let result = async {
+            let child = self.spawn_fc_process(instance_ref.clone())?;
+
+            // Load the snapshot and resume the VM in one go.
+            client
+                .put(
+                    "/snapshot/load",
+                    &json!({
+                        "snapshot_path": snapshot.state_path.to_string_lossy(),
+                        "mem_file_path": snapshot.mem_path.to_string_lossy(),
+                        "enable_diff_snapshots": false,
+                        "resume_vm": true,
+                    }),
+                )
+                .await?;
+            client.wait_until_running(Duration::from_secs(5)).await?;
+
+            Ok::<_, Error>(child)
+        }
+        .await;
+
+        match result {
+            Ok(child) => {
+                self.vms
+                    .lock()?
+                    .get_mut(vm_id)
+                    .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?
+                    .fc = Some(child);
+                instance_ref.lock()?.state.transition(VmState::Started)?;
+                info!(vm_id = %vm_id, "VM restored from snapshot");
+                Ok(())
+            }
+            Err(e) => {
+                // The snapshot files are still on disk, so the VM stays in
+                // Suspended and the restore can be retried.
+                instance_ref.lock()?.state.transition(VmState::Suspended)?;
+                Err(e)
+            }
+        }
     }
 
     async fn destroy_vm(&self, vm_id: &VmId) -> Result<()> {

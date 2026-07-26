@@ -221,6 +221,101 @@ if [[ "${RESUME_ERROR_CODE}" != "500" ]]; then
 fi
 echo "Second resume returned expected error: ${RESUME_AGAIN_BODY}"
 
+# Snapshot the running VM, expecting it to end up suspended with the
+# snapshot files written to the work dir
+SNAP_RESPONSE="$(curl -fsS \
+	-X POST "${HOSTD_URL}/api/vms/${VM_ID}/snapshot" \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}")"
+echo "Snapshot response: ${SNAP_RESPONSE}"
+
+SNAP_STATE_PATH="$(jq -r '.state_path' <<<"${SNAP_RESPONSE}")"
+SNAP_MEM_PATH="$(jq -r '.mem_path' <<<"${SNAP_RESPONSE}")"
+if [[ ! -s "${SNAP_STATE_PATH}" || ! -s "${SNAP_MEM_PATH}" ]]; then
+	echo "Snapshot files missing or empty: ${SNAP_STATE_PATH} ${SNAP_MEM_PATH}"
+	exit 1
+fi
+
+GET_RESPONSE="$(curl -fsS \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}" \
+	"${HOSTD_URL}/api/vms/${VM_ID}")"
+SNAP_STATUS="$(jq -r '.state' <<<"${GET_RESPONSE}")"
+if [[ "${SNAP_STATUS}" != "suspended" ]]; then
+	echo "Expected state 'suspended' after snapshot, got: ${GET_RESPONSE}"
+	exit 1
+fi
+
+# A suspended VM must not consume resources: the Firecracker process is
+# stopped and its API socket removed; only the snapshot files remain.
+if [[ -e "${FC_SOCKET}" ]]; then
+	echo "Firecracker socket ${FC_SOCKET} still exists for a suspended VM"
+	exit 1
+fi
+if pgrep -f "firecracker .*--id ${VM_ID}" >/dev/null 2>&1; then
+	echo "Firecracker process for ${VM_ID} is still running after snapshot"
+	exit 1
+fi
+echo "VM ${VM_ID} snapshotted and suspended (Firecracker process stopped)"
+
+# Snapshotting an already-suspended VM must fail with the uniform JSON error
+SNAP_AGAIN_RESPONSE="$(curl -sS -w '\n%{http_code}' \
+	-X POST "${HOSTD_URL}/api/vms/${VM_ID}/snapshot" \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}")"
+SNAP_AGAIN_CODE="${SNAP_AGAIN_RESPONSE##*$'\n'}"
+SNAP_AGAIN_BODY="${SNAP_AGAIN_RESPONSE%$'\n'*}"
+
+if [[ "${SNAP_AGAIN_CODE}" != "500" ]]; then
+	echo "Expected 500 when snapshotting a suspended vm, got ${SNAP_AGAIN_CODE}"
+	echo "${SNAP_AGAIN_BODY}"
+	exit 1
+fi
+
+SNAP_ERROR_CODE="$(jq -r '.error.code' <<<"${SNAP_AGAIN_BODY}")"
+if [[ "${SNAP_ERROR_CODE}" != "500" ]]; then
+	echo "Unexpected error body: ${SNAP_AGAIN_BODY}"
+	exit 1
+fi
+echo "Second snapshot returned expected error: ${SNAP_AGAIN_BODY}"
+
+# Restore the VM from its snapshot, expecting it back in started/running
+RESTORE_RESPONSE="$(curl -fsS \
+	-X POST "${HOSTD_URL}/api/vms/${VM_ID}/restore" \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}")"
+echo "Restore response: ${RESTORE_RESPONSE}"
+
+RESTORE_STATUS="$(jq -r '.state' <<<"${RESTORE_RESPONSE}")"
+if [[ "${RESTORE_STATUS}" != "started" ]]; then
+	echo "Unexpected restore response: ${RESTORE_RESPONSE}"
+	exit 1
+fi
+
+FC_INFO="$(curl -fsS --unix-socket "${FC_SOCKET}" http://localhost/)"
+FC_STATE="$(jq -r '.state' <<<"${FC_INFO}")"
+if [[ "${FC_STATE}" != "Running" ]]; then
+	echo "Expected Firecracker state 'Running' for a restored VM, got: ${FC_INFO}"
+	exit 1
+fi
+echo "VM ${VM_ID} restored from snapshot (Firecracker reports Running)"
+
+# Restoring a VM that is not suspended must fail with the uniform JSON error
+RESTORE_AGAIN_RESPONSE="$(curl -sS -w '\n%{http_code}' \
+	-X POST "${HOSTD_URL}/api/vms/${VM_ID}/restore" \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}")"
+RESTORE_AGAIN_CODE="${RESTORE_AGAIN_RESPONSE##*$'\n'}"
+RESTORE_AGAIN_BODY="${RESTORE_AGAIN_RESPONSE%$'\n'*}"
+
+if [[ "${RESTORE_AGAIN_CODE}" != "500" ]]; then
+	echo "Expected 500 when restoring a running vm, got ${RESTORE_AGAIN_CODE}"
+	echo "${RESTORE_AGAIN_BODY}"
+	exit 1
+fi
+
+RESTORE_ERROR_CODE="$(jq -r '.error.code' <<<"${RESTORE_AGAIN_BODY}")"
+if [[ "${RESTORE_ERROR_CODE}" != "500" ]]; then
+	echo "Unexpected error body: ${RESTORE_AGAIN_BODY}"
+	exit 1
+fi
+echo "Second restore returned expected error: ${RESTORE_AGAIN_BODY}"
+
 # List VMs, expecting the created VM to be present
 LIST_RESPONSE="$(curl -fsS \
 	-H "Authorization: Bearer ${HOSTD_TOKEN}" \
@@ -273,6 +368,10 @@ echo "Get after delete returned expected 404 JSON error: ${GET_DELETED_BODY}"
 # The VM's runtime artifacts should be cleaned up
 if [[ -e "/tmp/tikovm/${VM_ID}.socket" ]]; then
 	echo "Firecracker socket /tmp/tikovm/${VM_ID}.socket was not cleaned up"
+	exit 1
+fi
+if [[ -e "${SNAP_STATE_PATH}" || -e "${SNAP_MEM_PATH}" ]]; then
+	echo "Snapshot files were not cleaned up: ${SNAP_STATE_PATH} ${SNAP_MEM_PATH}"
 	exit 1
 fi
 

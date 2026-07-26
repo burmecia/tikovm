@@ -187,6 +187,25 @@ pub(crate) struct EnvVar {
     pub value: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct VmSnapshot {
+    pub state_path: PathBuf,
+    pub mem_path: PathBuf,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl VmSnapshot {
+    pub(crate) fn new(vm_id: &VmId, work_dir: impl AsRef<Path>) -> Self {
+        let state_path = work_dir.as_ref().join(format!("{vm_id}_snapshot.state"));
+        let mem_path = work_dir.as_ref().join(format!("{vm_id}_snapshot.mem"));
+        Self {
+            state_path,
+            mem_path,
+            created_at: chrono::Utc::now(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct VmConfig {
     pub name: String,
@@ -239,6 +258,9 @@ pub(crate) struct VmInstance {
     pub guest_ip: IpAddr,
     pub socket_path: PathBuf,
 
+    // Snapshot setup
+    pub snapshot: Option<VmSnapshot>,
+
     // Logging setup
     pub serial_log: PathBuf,
     pub error_log: PathBuf,
@@ -277,6 +299,7 @@ impl VmInstance {
             boot_args,
             rootfs_path,
             overlay_disk,
+            snapshot: None,
             tap_name: TapName::from(&vm_id),
             guest_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             socket_path,
@@ -296,6 +319,10 @@ impl VmInstance {
         let _ = std::fs::remove_file(&self.serial_log);
         let _ = std::fs::remove_file(&self.error_log);
         let _ = std::fs::remove_file(&self.overlay_disk);
+        if let Some(snapshot) = &self.snapshot {
+            let _ = std::fs::remove_file(&snapshot.state_path);
+            let _ = std::fs::remove_file(&snapshot.mem_path);
+        }
         Ok(())
     }
 }

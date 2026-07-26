@@ -21,7 +21,7 @@ struct Args {
 
     /// Directory for runtime state (sockets, logs)
     #[arg(long, default_value = "/tmp/tikovm")]
-    run_dir: String,
+    work_dir: String,
 
     /// Address for the API server to listen on
     #[arg(long, default_value = "0.0.0.0:3000")]
@@ -36,16 +36,16 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    fs::create_dir_all(&args.run_dir)?;
+    fs::create_dir_all(&args.work_dir)?;
 
-    let fc_vmm = FirecrackerVmm::new(&args.assets_dir, &args.run_dir)?;
+    let fc_vmm = FirecrackerVmm::new(&args.assets_dir, &args.work_dir)?;
     let api_server = ApiServer::new(Arc::new(fc_vmm))?;
 
     let addr = args.api_listen.as_str();
 
     match api_server.run(addr).await {
         Ok(_) => {
-            info!(addr = %addr, run_dir = %args.run_dir, "Tikovm hostd started");
+            info!(addr = %addr, work_dir = %args.work_dir, "Tikovm hostd started");
         }
         Err(e) => {
             error!("Failed to start Tikovm hostd server: {}", e);

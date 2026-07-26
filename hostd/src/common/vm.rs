@@ -264,7 +264,7 @@ impl VmInstance {
     pub(crate) fn new(
         config: &VmConfig,
         assets_dir: impl AsRef<Path>,
-        run_dir: impl AsRef<Path>,
+        work_dir: impl AsRef<Path>,
     ) -> Result<Self> {
         let vm_id = VmId::new_random(config.project_id);
 
@@ -273,12 +273,12 @@ impl VmInstance {
         let boot_args = "console=ttyS0 reboot=k panic=1 pci=on nomodules".to_string();
 
         let rootfs_path = assets_dir.as_ref().join(config.rootfs_file()?);
-        let overlay_disk = run_dir.as_ref().join(format!("{vm_id}.overlay.ext4"));
+        let overlay_disk = work_dir.as_ref().join(format!("{vm_id}.overlay.ext4"));
 
-        let socket_path = run_dir.as_ref().join(format!("{vm_id}.socket"));
+        let socket_path = work_dir.as_ref().join(format!("{vm_id}.socket"));
 
-        let serial_log = run_dir.as_ref().join(format!("{vm_id}.serial.log"));
-        let error_log = run_dir.as_ref().join(format!("{vm_id}.stderr.log"));
+        let serial_log = work_dir.as_ref().join(format!("{vm_id}.serial.log"));
+        let error_log = work_dir.as_ref().join(format!("{vm_id}.stderr.log"));
 
         Ok(Self {
             vm_id: vm_id.clone(),
@@ -300,6 +300,14 @@ impl VmInstance {
 
     pub(crate) fn into_ref(self) -> VmInstanceRef {
         Arc::new(Mutex::new(self))
+    }
+
+    pub(crate) fn cleanup_runtime_artifacts(&self) -> Result<()> {
+        let _ = std::fs::remove_file(&self.socket_path);
+        let _ = std::fs::remove_file(&self.serial_log);
+        let _ = std::fs::remove_file(&self.error_log);
+        let _ = std::fs::remove_file(&self.overlay_disk);
+        Ok(())
     }
 }
 

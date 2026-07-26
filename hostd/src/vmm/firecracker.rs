@@ -149,18 +149,18 @@ impl FcVmEntry {
 pub(crate) struct FirecrackerVmm {
     fc_bin: PathBuf,
     assets_dir: PathBuf,
-    run_dir: PathBuf,
+    work_dir: PathBuf,
     vms: Mutex<HashMap<VmId, FcVmEntry>>,
 }
 
 impl FirecrackerVmm {
-    pub(crate) fn new(assets_dir: impl AsRef<Path>, run_dir: impl AsRef<Path>) -> Result<Self> {
+    pub(crate) fn new(assets_dir: impl AsRef<Path>, work_dir: impl AsRef<Path>) -> Result<Self> {
         let fc_bin = from_path_or_env("firecracker", ENV_FIRECRACKER_BIN);
         debug!(?fc_bin, "Firecracker binary");
         Ok(Self {
             fc_bin,
             assets_dir: assets_dir.as_ref().to_path_buf(),
-            run_dir: run_dir.as_ref().to_path_buf(),
+            work_dir: work_dir.as_ref().to_path_buf(),
             vms: Mutex::new(HashMap::new()),
         })
     }
@@ -290,7 +290,7 @@ impl FirecrackerVmm {
 #[async_trait]
 impl Vmm for FirecrackerVmm {
     async fn create_vm(&self, config: &VmConfig) -> Result<VmId> {
-        let instance = VmInstance::new(config, &self.assets_dir, &self.run_dir)?;
+        let instance = VmInstance::new(config, &self.assets_dir, &self.work_dir)?;
         let vm_id = instance.vm_id.clone();
         let instance_ref = instance.into_ref();
 
@@ -376,10 +376,7 @@ impl Vmm for FirecrackerVmm {
         }
 
         // Clean up runtime artifacts.
-        let instance = entry.instance.lock()?;
-        let _ = fs::remove_file(&instance.socket_path);
-        let _ = fs::remove_file(&instance.error_log);
-        let _ = fs::remove_file(&instance.overlay_disk);
+        entry.instance.lock()?.cleanup_runtime_artifacts()?;
 
         info!(vm_id = %vm_id, "VM destroyed");
 

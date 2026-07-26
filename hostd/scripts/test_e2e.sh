@@ -414,6 +414,26 @@ for TAP in "${VM1_TAP}" "${VM2_TAP}"; do
 done
 echo "Bridge ${BRIDGE} carries TAPs ${VM1_TAP} and ${VM2_TAP}"
 
+# Data path check: both guests answer ping from the host over the bridge.
+# VM ${VM_ID} went through snapshot/restore above, so this also proves
+# networking survives a restore: the guest resumes from the memory snapshot
+# with eth0 already configured and its TAP was never torn down.
+for IP in "${VM1_GUEST_IP}" "${VM2_GUEST_IP}"; do
+	PING_OK=0
+	for _ in {1..15}; do
+		if ping -c 1 -W 1 "${IP}" >/dev/null 2>&1; then
+			PING_OK=1
+			break
+		fi
+		sleep 1
+	done
+	if [[ "${PING_OK}" -ne 1 ]]; then
+		echo "Guest ${IP} does not answer ping from the host"
+		exit 1
+	fi
+done
+echo "Both guests answer ping from the host (${VM_ID} post-restore)"
+
 # Deleting the second VM must release its TAP but keep the bridge alive
 # while the first VM still uses it.
 DELETE2_CODE="$(curl -sS -o /dev/null -w '%{http_code}' \

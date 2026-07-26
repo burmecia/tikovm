@@ -308,6 +308,7 @@ impl Vmm for FirecrackerVmm {
     async fn create_vm(&self, config: &VmConfig) -> Result<VmId> {
         let instance = VmInstance::new(config, &self.assets_dir, &self.work_dir)?;
         let vm_id = instance.vm_id.clone();
+        fs::create_dir_all(&instance.work_dir)?;
         let instance_ref = instance.into_ref();
 
         self.vms

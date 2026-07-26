@@ -7,7 +7,7 @@ use std::fs;
 use std::sync::Arc;
 
 use clap::Parser;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 use tracing_subscriber::{self, EnvFilter};
 
 use crate::{api::ApiServer, error::Result, vmm::firecracker::FirecrackerVmm};

@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -16,7 +15,7 @@ use tokio::{
 };
 use tracing::{debug, info};
 
-use crate::common::vm::{TapName, VmConfig, VmId, VmInstance, VmInstanceRef, VmState};
+use crate::common::vm::{VmConfig, VmId, VmInstance, VmInstanceRef, VmState};
 use crate::error::{Error, Result};
 
 use crate::vmm::Vmm;
@@ -161,14 +160,6 @@ impl FcVmEntry {
             fc: None,
         }
     }
-
-    fn fc_process_id(&self) -> Option<u32> {
-        self.fc.as_ref().and_then(|c| c.id())
-    }
-
-    fn is_running(&self) -> bool {
-        self.instance.lock().unwrap().state == VmState::Started && self.fc_process_id().is_some()
-    }
 }
 
 pub(crate) struct FirecrackerVmm {
@@ -244,7 +235,7 @@ impl FirecrackerVmm {
         let client = FcApiClient::new(&instance.socket_path);
 
         // Configure boot source (kernel + initramfs).
-        let mut boot_source = json!({
+        let boot_source = json!({
             "kernel_image_path": instance.kernel_path.to_string_lossy(),
             "boot_args": instance.boot_args,
             "initrd_path": instance.initramfs_path.to_string_lossy(),
@@ -348,6 +339,15 @@ impl Vmm for FirecrackerVmm {
             .map(|entry| entry.instance.clone()))
     }
 
+    async fn list_vms(&self) -> Result<Vec<VmInstanceRef>> {
+        Ok(self
+            .vms
+            .lock()?
+            .values()
+            .map(|entry| entry.instance.clone())
+            .collect())
+    }
+
     async fn start_vm(&self, vm_id: &VmId) -> Result<()> {
         let (instance_ref, client) = {
             let vms = self.vms.lock()?;
@@ -386,13 +386,56 @@ impl Vmm for FirecrackerVmm {
         Ok(())
     }
 
-    async fn list_vms(&self) -> Result<Vec<VmInstanceRef>> {
-        Ok(self
-            .vms
-            .lock()?
-            .values()
-            .map(|entry| entry.instance.clone())
-            .collect())
+    async fn pause_vm(&self, vm_id: &VmId) -> Result<()> {
+        let (instance_ref, client) = {
+            let vms = self.vms.lock()?;
+            let entry = vms
+                .get(vm_id)
+                .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
+            (entry.instance.clone(), entry.api_client.clone())
+        };
+
+        instance_ref.lock()?.state.transition(VmState::Pausing)?;
+
+        // Pause the VM via the Firecracker API, rolling back to Started on
+        // failure.
+        match client.patch("/vm", &json!({"state": "Paused"})).await {
+            Ok(_) => {
+                instance_ref.lock()?.state.transition(VmState::Paused)?;
+            }
+            Err(e) => {
+                instance_ref.lock()?.state.transition(VmState::Started)?;
+                return Err(e);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn resume_vm(&self, vm_id: &VmId) -> Result<()> {
+        let (instance_ref, client) = {
+            let vms = self.vms.lock()?;
+            let entry = vms
+                .get(vm_id)
+                .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
+            (entry.instance.clone(), entry.api_client.clone())
+        };
+
+        instance_ref.lock()?.state.transition(VmState::Resuming)?;
+
+        // Resume the VM via the Firecracker API, rolling back to Paused on
+        // failure.
+        match client.patch("/vm", &json!({"state": "Resumed"})).await {
+            Ok(_) => {
+                instance_ref.lock()?.state.transition(VmState::Started)?;
+            }
+            Err(e) => {
+                instance_ref.lock()?.state.transition(VmState::Paused)?;
+                return Err(e);
+            }
+        }
+
+        Ok(())
     }
 
     async fn destroy_vm(&self, vm_id: &VmId) -> Result<()> {

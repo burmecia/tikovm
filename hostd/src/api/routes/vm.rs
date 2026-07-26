@@ -2,7 +2,7 @@ use axum::{
     Json, Router,
     extract::{Path, State},
     http::StatusCode,
-    routing::{delete, get, post, put},
+    routing::{get, post},
 };
 use serde_json::{Value, json};
 
@@ -22,6 +22,8 @@ pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/", get(list_vms).post(create_vm))
         .route("/{id}", get(get_vm).put(update_vm).delete(delete_vm))
+        .route("/{id}/pause", post(pause_vm))
+        .route("/{id}/resume", post(resume_vm))
         .nest("/{id}/network", network::routes())
 }
 
@@ -66,10 +68,40 @@ pub(crate) async fn get_vm(
 /// Stub: update a vm by id.
 pub(crate) async fn update_vm(
     State(_state): State<AppState>,
-    Path(id): Path<String>,
-    ApiJson(payload): ApiJson<VmConfig>,
+    Path(_id): Path<String>,
+    ApiJson(_payload): ApiJson<VmConfig>,
 ) -> Json<Value> {
     Json(json!({ "status": "not implemented" }))
+}
+
+/// Pause a vm by id.
+pub(crate) async fn pause_vm(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<VmInstance>> {
+    state.vmm.pause_vm(&VmId(id.clone())).await?;
+    let vm_instance_ref = state
+        .vmm
+        .get_vm(&VmId(id.clone()))
+        .await?
+        .ok_or(Error::VmNotFound(id))?;
+    let vm_instance = vm_instance_ref.lock()?;
+    Ok(Json(vm_instance.clone()))
+}
+
+/// Resume a paused vm by id.
+pub(crate) async fn resume_vm(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<VmInstance>> {
+    state.vmm.resume_vm(&VmId(id.clone())).await?;
+    let vm_instance_ref = state
+        .vmm
+        .get_vm(&VmId(id.clone()))
+        .await?
+        .ok_or(Error::VmNotFound(id))?;
+    let vm_instance = vm_instance_ref.lock()?;
+    Ok(Json(vm_instance.clone()))
 }
 
 /// Delete a vm by id.

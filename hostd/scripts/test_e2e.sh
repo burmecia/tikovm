@@ -161,6 +161,66 @@ if [[ "${BOOT_OK}" -ne 1 ]]; then
 fi
 echo "VM ${VM_ID} booted to a login prompt"
 
+# Pause the VM, expecting the API and Firecracker to agree on the paused state
+PAUSE_RESPONSE="$(curl -fsS \
+	-X POST "${HOSTD_URL}/api/vms/${VM_ID}/pause" \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}")"
+echo "Pause response: ${PAUSE_RESPONSE}"
+
+PAUSE_STATUS="$(jq -r '.state' <<<"${PAUSE_RESPONSE}")"
+if [[ "${PAUSE_STATUS}" != "paused" ]]; then
+	echo "Unexpected pause response: ${PAUSE_RESPONSE}"
+	exit 1
+fi
+
+FC_INFO="$(curl -fsS --unix-socket "${FC_SOCKET}" http://localhost/)"
+FC_STATE="$(jq -r '.state' <<<"${FC_INFO}")"
+if [[ "${FC_STATE}" != "Paused" ]]; then
+	echo "Expected Firecracker state 'Paused' for a 'paused' VM, got: ${FC_INFO}"
+	exit 1
+fi
+echo "VM ${VM_ID} paused (Firecracker agrees)"
+
+# Resume the VM, expecting it to end up back in the started/running state
+RESUME_RESPONSE="$(curl -fsS \
+	-X POST "${HOSTD_URL}/api/vms/${VM_ID}/resume" \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}")"
+echo "Resume response: ${RESUME_RESPONSE}"
+
+RESUME_STATUS="$(jq -r '.state' <<<"${RESUME_RESPONSE}")"
+if [[ "${RESUME_STATUS}" != "started" ]]; then
+	echo "Unexpected resume response: ${RESUME_RESPONSE}"
+	exit 1
+fi
+
+FC_INFO="$(curl -fsS --unix-socket "${FC_SOCKET}" http://localhost/)"
+FC_STATE="$(jq -r '.state' <<<"${FC_INFO}")"
+if [[ "${FC_STATE}" != "Running" ]]; then
+	echo "Expected Firecracker state 'Running' for a resumed VM, got: ${FC_INFO}"
+	exit 1
+fi
+echo "VM ${VM_ID} resumed (Firecracker reports Running)"
+
+# Resuming a VM that is not paused must fail with the uniform JSON error
+RESUME_AGAIN_RESPONSE="$(curl -sS -w '\n%{http_code}' \
+	-X POST "${HOSTD_URL}/api/vms/${VM_ID}/resume" \
+	-H "Authorization: Bearer ${HOSTD_TOKEN}")"
+RESUME_AGAIN_CODE="${RESUME_AGAIN_RESPONSE##*$'\n'}"
+RESUME_AGAIN_BODY="${RESUME_AGAIN_RESPONSE%$'\n'*}"
+
+if [[ "${RESUME_AGAIN_CODE}" != "500" ]]; then
+	echo "Expected 500 when resuming a running vm, got ${RESUME_AGAIN_CODE}"
+	echo "${RESUME_AGAIN_BODY}"
+	exit 1
+fi
+
+RESUME_ERROR_CODE="$(jq -r '.error.code' <<<"${RESUME_AGAIN_BODY}")"
+if [[ "${RESUME_ERROR_CODE}" != "500" ]]; then
+	echo "Unexpected error body: ${RESUME_AGAIN_BODY}"
+	exit 1
+fi
+echo "Second resume returned expected error: ${RESUME_AGAIN_BODY}"
+
 # List VMs, expecting the created VM to be present
 LIST_RESPONSE="$(curl -fsS \
 	-H "Authorization: Bearer ${HOSTD_TOKEN}" \

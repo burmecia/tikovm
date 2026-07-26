@@ -125,17 +125,6 @@ pub(crate) enum VmState {
 }
 
 impl VmState {
-    /// Stable states are the ones a VM can rest in; transitional states only
-    /// exist while an async VMM operation is in flight.
-    pub(crate) fn is_stable(self) -> bool {
-        use VmState::*;
-        matches!(self, Created | Started | Paused | Suspended | Destroyed)
-    }
-
-    pub(crate) fn is_terminal(self) -> bool {
-        matches!(self, VmState::Destroyed)
-    }
-
     /// Valid transitions: stable -> transitional -> stable, where the second
     /// step either completes the operation or rolls back to the previous
     /// stable state on failure.

@@ -2,7 +2,7 @@ use axum::{Json, Router, extract::Path, routing::get};
 
 use crate::{
     api::{error::ApiJson, server::AppState},
-    vmm::vm::NetworkConfig,
+    net::NetworkConfig,
 };
 
 /// Network routes, to be nested under `/vms/{id}/network`.

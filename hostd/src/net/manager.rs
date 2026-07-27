@@ -11,8 +11,9 @@ use tracing::warn;
 use super::cidr::Ipv4Net;
 use super::host;
 use super::state::{NetState, ProjectSetup};
-use crate::vmm::vm::{TapName, VmId, VmNet};
+use super::types::{TapName, VmNet};
 use crate::error::{Error, Result};
+use crate::vmm::vm::VmId;
 
 pub(crate) struct NetworkManager {
     state: Mutex<NetState>,

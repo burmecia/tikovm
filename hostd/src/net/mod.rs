@@ -11,16 +11,18 @@
 //! VM is released. State is persisted to `network_state.json` and reconciled
 //! on startup so a hostd restart never leaks devices or subnets.
 //!
-//! Layout: `cidr` has the CIDR arithmetic, `state` the pure (unit-testable)
-//! allocator, `host` the host-side effects, and `manager` the
-//! `NetworkManager` tying them together.
+//! Layout: `cidr` has the CIDR arithmetic, `types` the shared data
+//! structures, `state` the pure (unit-testable) allocator, `host` the
+//! host-side effects, and `manager` the `NetworkManager` tying them together.
 
 mod cidr;
 mod host;
 mod manager;
 mod state;
+mod types;
 
 pub(crate) use manager::NetworkManager;
+pub(crate) use types::{NetworkConfig, TapName, VmNet};
 
 /// Host interface names are limited to 15 bytes (IFNAMSIZ - 1).
 const IFNAMSIZ_MAX: usize = 15;

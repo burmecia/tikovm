@@ -11,8 +11,8 @@ use crate::{
         error::{ApiJson, ApiResult},
         server::AppState,
     },
-    vmm::vm::{VmConfig, VmId, VmInstance, VmSnapshot},
     error::Error,
+    vmm::vm::{VmConfig, VmId, VmInstance, VmSnapshot},
 };
 
 use super::{network, workload};

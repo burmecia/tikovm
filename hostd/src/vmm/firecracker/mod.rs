@@ -21,12 +21,12 @@ use tracing::{debug, info, warn};
 mod vsock;
 
 use crate::error::{Error, Result};
-use crate::net::NetworkManager;
-use crate::vmm::vm::{TapName, VmConfig, VmId, VmInstance, VmInstanceRef, VmSnapshot, VmState};
+use crate::net::{NetworkManager, TapName};
+use crate::vmm::vm::{VmConfig, VmId, VmInstance, VmInstanceRef, VmSnapshot, VmState};
 use crate::vmm::workload::{Workload, WorkloadId, WorkloadLogEntry, WorkloadSpec};
 
-use super::Vmm;
 use self::vsock::{GuestConnHandle, GuestEvent, GuestRequest};
+use super::Vmm;
 
 const ENV_FIRECRACKER_BIN: &str = "FIRECRACKER_BIN";
 
@@ -807,10 +807,10 @@ impl Vmm for FirecrackerVmm {
                     .lock()?
                     .get_mut(vm_id)
                     .and_then(|entry| entry.fc.take());
-                if let Some(mut child) = old_child {
-                    if let Err(e) = child.kill().await {
-                        warn!(vm_id = %vm_id, error = %e, "failed to kill Firecracker process after snapshotting");
-                    }
+                if let Some(mut child) = old_child
+                    && let Err(e) = child.kill().await
+                {
+                    warn!(vm_id = %vm_id, error = %e, "failed to kill Firecracker process after snapshotting");
                 }
 
                 let mut instance = instance_ref.lock()?;
@@ -1044,10 +1044,10 @@ impl Vmm for FirecrackerVmm {
 
         // Kill the Firecracker process. An error here just means the process
         // already exited, so keep going with cleanup.
-        if let Some(mut child) = entry.fc.take() {
-            if let Err(e) = child.kill().await {
-                debug!(vm_id = %vm_id, error = %e, "failed to kill Firecracker process");
-            }
+        if let Some(mut child) = entry.fc.take()
+            && let Err(e) = child.kill().await
+        {
+            debug!(vm_id = %vm_id, error = %e, "failed to kill Firecracker process");
         }
 
         // Release the network allocation (TAP + guest IP; bridge + subnet

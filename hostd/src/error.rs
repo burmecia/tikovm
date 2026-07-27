@@ -41,7 +41,7 @@ pub(crate) enum Error {
 
 impl Error {
     pub(crate) fn io_other(msg: impl Into<String>) -> Self {
-        Error::Io(std::io::Error::new(std::io::ErrorKind::Other, msg.into()))
+        Error::Io(std::io::Error::other(msg.into()))
     }
 
     pub(crate) fn vmm(msg: impl Into<String>) -> Self {

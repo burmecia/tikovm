@@ -10,9 +10,10 @@ use std::net::Ipv4Addr;
 use serde::{Deserialize, Serialize};
 
 use super::cidr::Ipv4Net;
+use super::types::{TapName, VmNet};
 use super::{BRIDGE_PREFIX, IFNAMSIZ_MAX};
-use crate::vmm::vm::{TapName, VmId, VmNet};
 use crate::error::{Error, Result};
+use crate::vmm::vm::VmId;
 
 /// Persisted allocation state.
 #[derive(Debug, Default, Serialize, Deserialize)]

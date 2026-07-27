@@ -1,10 +1,12 @@
 pub(crate) mod firecracker;
-mod vsock;
+mod utils;
+pub(crate) mod vm;
+pub(crate) mod workload;
 
 use async_trait::async_trait;
 
-use crate::common::vm::{VmConfig, VmId, VmInstanceRef, VmSnapshot};
-use crate::common::workload::{Workload, WorkloadId, WorkloadLogEntry, WorkloadSpec};
+use self::vm::{VmConfig, VmId, VmInstanceRef, VmSnapshot};
+use self::workload::{Workload, WorkloadId, WorkloadLogEntry, WorkloadSpec};
 use crate::error::Result;
 
 #[async_trait]

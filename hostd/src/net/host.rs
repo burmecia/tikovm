@@ -7,7 +7,7 @@ use std::process::Command;
 
 use super::BRIDGE_PREFIX;
 use super::state::ProjectSetup;
-use crate::common::vm::TapName;
+use crate::vmm::vm::TapName;
 use crate::error::{Error, Result};
 
 pub(super) fn run_cmd(cmd: &str, args: &[&str]) -> Result<()> {

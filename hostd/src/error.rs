@@ -1,4 +1,4 @@
-use crate::common::vm::VmState;
+use crate::vmm::vm::VmState;
 use std::sync::PoisonError;
 
 #[derive(Debug, thiserror::Error)]

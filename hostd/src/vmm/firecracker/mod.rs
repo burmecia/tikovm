@@ -18,13 +18,15 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 
-use crate::common::vm::{TapName, VmConfig, VmId, VmInstance, VmInstanceRef, VmSnapshot, VmState};
-use crate::common::workload::{Workload, WorkloadId, WorkloadLogEntry, WorkloadSpec};
+mod vsock;
+
 use crate::error::{Error, Result};
 use crate::net::NetworkManager;
+use crate::vmm::vm::{TapName, VmConfig, VmId, VmInstance, VmInstanceRef, VmSnapshot, VmState};
+use crate::vmm::workload::{Workload, WorkloadId, WorkloadLogEntry, WorkloadSpec};
 
-use crate::vmm::Vmm;
-use crate::vmm::vsock::{self, GuestConnHandle, GuestEvent, GuestRequest};
+use super::Vmm;
+use self::vsock::{GuestConnHandle, GuestEvent, GuestRequest};
 
 const ENV_FIRECRACKER_BIN: &str = "FIRECRACKER_BIN";
 

@@ -11,7 +11,7 @@ use tracing::warn;
 use super::cidr::Ipv4Net;
 use super::host;
 use super::state::{NetState, ProjectSetup};
-use crate::common::vm::{TapName, VmId, VmNet};
+use crate::vmm::vm::{TapName, VmId, VmNet};
 use crate::error::{Error, Result};
 
 pub(crate) struct NetworkManager {

@@ -10,7 +10,7 @@ use crate::{
         error::{ApiJson, ApiResult},
         server::AppState,
     },
-    common::{
+    vmm::{
         vm::VmId,
         workload::{Workload, WorkloadId, WorkloadLogEntry, WorkloadSpec},
     },

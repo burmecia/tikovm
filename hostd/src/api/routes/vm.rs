@@ -11,7 +11,7 @@ use crate::{
         error::{ApiJson, ApiResult},
         server::AppState,
     },
-    common::vm::{VmConfig, VmId, VmInstance, VmSnapshot},
+    vmm::vm::{VmConfig, VmId, VmInstance, VmSnapshot},
     error::Error,
 };
 

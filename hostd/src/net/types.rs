@@ -38,15 +38,59 @@ impl From<&VmId> for TapName {
     }
 }
 
+/// A guest TCP port the VM exposes for its HTTP workloads, with a
+/// human-readable `label` describing the port's purpose (e.g. "web", "api").
+///
+/// This is a VM-side registry only: nothing on the host forwards traffic to
+/// these ports yet. Host-side reachability (a JWT-authenticated reverse
+/// proxy) is a planned follow-up that will read this registry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ExposedPort {
+    pub port: u16,
+    pub label: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct NetworkConfig {
     pub allow_internet: bool,
+    /// Ports (with labels) the VM exposes for its HTTP workloads. Managed via
+    /// the `/api/vms/{id}/ports` endpoints; see [`ExposedPort`].
     #[serde(default)]
-    pub ingress_ports: Vec<u16>,
+    pub exposed_ports: Vec<ExposedPort>,
     #[serde(default)]
     pub egress: Vec<String>,
     #[serde(default)]
     pub public_access: bool,
+}
+
+impl NetworkConfig {
+    /// Register an exposed port. The port number is the identity: adding the
+    /// same port twice is a conflict, and port 0 is invalid.
+    pub(crate) fn add_exposed_port(&mut self, vm_id: &VmId, port: ExposedPort) -> Result<()> {
+        if port.port == 0 {
+            return Err(Error::InvalidPort(port.port));
+        }
+        if self.exposed_ports.iter().any(|p| p.port == port.port) {
+            return Err(Error::PortAlreadyExposed {
+                vm_id: vm_id.to_string(),
+                port: port.port,
+            });
+        }
+        self.exposed_ports.push(port);
+        Ok(())
+    }
+
+    /// Remove an exposed port by port number.
+    pub(crate) fn remove_exposed_port(&mut self, vm_id: &VmId, port: u16) -> Result<()> {
+        let Some(pos) = self.exposed_ports.iter().position(|p| p.port == port) else {
+            return Err(Error::PortNotExposed {
+                vm_id: vm_id.to_string(),
+                port,
+            });
+        };
+        self.exposed_ports.remove(pos);
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,4 +148,67 @@ impl VmNet {
 fn guest_mac_from_ip(ip: Ipv4Addr) -> String {
     let [a, b, c, d] = ip.octets();
     format!("AA:FC:{a:02X}:{b:02X}:{c:02X}:{d:02X}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vm_id() -> VmId {
+        VmId::from("vm-1-test")
+    }
+
+    fn exposed(port: u16) -> ExposedPort {
+        ExposedPort {
+            port,
+            label: format!("svc-{port}"),
+        }
+    }
+
+    #[test]
+    fn add_exposed_port_appends() {
+        let mut cfg = NetworkConfig::default();
+        cfg.add_exposed_port(&vm_id(), exposed(8080)).unwrap();
+        cfg.add_exposed_port(&vm_id(), exposed(3000)).unwrap();
+        assert_eq!(cfg.exposed_ports, vec![exposed(8080), exposed(3000)]);
+    }
+
+    #[test]
+    fn add_exposed_port_rejects_zero() {
+        let mut cfg = NetworkConfig::default();
+        assert!(matches!(
+            cfg.add_exposed_port(&vm_id(), exposed(0)),
+            Err(Error::InvalidPort(0))
+        ));
+        assert!(cfg.exposed_ports.is_empty());
+    }
+
+    #[test]
+    fn add_exposed_port_rejects_duplicate() {
+        let mut cfg = NetworkConfig::default();
+        cfg.add_exposed_port(&vm_id(), exposed(8080)).unwrap();
+        assert!(matches!(
+            cfg.add_exposed_port(&vm_id(), exposed(8080)),
+            Err(Error::PortAlreadyExposed { port: 8080, .. })
+        ));
+        assert_eq!(cfg.exposed_ports.len(), 1);
+    }
+
+    #[test]
+    fn remove_exposed_port_removes() {
+        let mut cfg = NetworkConfig::default();
+        cfg.add_exposed_port(&vm_id(), exposed(8080)).unwrap();
+        cfg.add_exposed_port(&vm_id(), exposed(3000)).unwrap();
+        cfg.remove_exposed_port(&vm_id(), 8080).unwrap();
+        assert_eq!(cfg.exposed_ports, vec![exposed(3000)]);
+    }
+
+    #[test]
+    fn remove_exposed_port_rejects_missing() {
+        let mut cfg = NetworkConfig::default();
+        assert!(matches!(
+            cfg.remove_exposed_port(&vm_id(), 8080),
+            Err(Error::PortNotExposed { port: 8080, .. })
+        ));
+    }
 }

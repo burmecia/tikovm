@@ -13,7 +13,7 @@ use serde_json::json;
 use tracing::{debug, info, warn};
 
 use crate::error::{Error, Result};
-use crate::net::{NetworkManager, TapName};
+use crate::net::{ExposedPort, NetworkManager, TapName};
 use crate::vmm::Vmm;
 use crate::vmm::vm::{VmConfig, VmId, VmInstance, VmInstanceRef, VmSnapshot, VmState};
 use crate::vmm::workload::{Workload, WorkloadId, WorkloadLogEntry, WorkloadSpec};
@@ -493,6 +493,43 @@ impl Vmm for FirecrackerVmm {
             .get(workload_id)
             .cloned()
             .ok_or_else(|| Error::WorkloadNotFound(workload_id.to_string()))
+    }
+
+    /// Exposed ports of a VM (the VM-side registry in `network_config`).
+    async fn list_exposed_ports(&self, vm_id: &VmId) -> Result<Vec<ExposedPort>> {
+        let vms = self.vms.lock()?;
+        let entry = vms
+            .get(vm_id)
+            .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
+        let instance = entry.instance.lock()?;
+        Ok(instance.vm_config.network_config.exposed_ports.clone())
+    }
+
+    /// Register an exposed port on a VM.
+    async fn add_exposed_port(&self, vm_id: &VmId, port: ExposedPort) -> Result<ExposedPort> {
+        let vms = self.vms.lock()?;
+        let entry = vms
+            .get(vm_id)
+            .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
+        let mut instance = entry.instance.lock()?;
+        instance
+            .vm_config
+            .network_config
+            .add_exposed_port(vm_id, port.clone())?;
+        Ok(port)
+    }
+
+    /// Remove an exposed port from a VM by port number.
+    async fn remove_exposed_port(&self, vm_id: &VmId, port: u16) -> Result<()> {
+        let vms = self.vms.lock()?;
+        let entry = vms
+            .get(vm_id)
+            .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
+        let mut instance = entry.instance.lock()?;
+        instance
+            .vm_config
+            .network_config
+            .remove_exposed_port(vm_id, port)
     }
 
     /// Captured stdout/stderr of a workload, in arrival order.

@@ -16,6 +16,7 @@ TESTS=(
 	test_workloads.sh
 	test_exec.sh
 	test_networking.sh
+	test_ports.sh
 )
 
 for t in "${TESTS[@]}"; do

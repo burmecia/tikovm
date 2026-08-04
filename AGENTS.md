@@ -33,7 +33,8 @@ hostd/
   src/main.rs         CLI args (clap), wiring: NetworkManager -> FirecrackerVmm -> ApiServer
   src/error.rs        crate-wide Error/Result (thiserror)
   src/api/            axum HTTP API: server.rs (router + Bearer auth middleware),
-                      error.rs (uniform JSON errors), routes/{health,vm,network,workload}.rs
+                      error.rs (uniform JSON errors),
+                      routes/{health,vm,network,ports,workload}.rs
   src/net/            host networking: cidr.rs (IPv4 CIDR math), state.rs (pure
                       IPAM allocator, unit-tested), host.rs (`ip`/`iptables`
                       shell-outs), manager.rs (NetworkManager: ties state to
@@ -54,7 +55,7 @@ scripts/              project-wide bash: run_hostd.sh,
                       build_initramfs.sh, initramfs_init.sh
 tests/                end-to-end tests: common.sh (shared helpers), run_all.sh
                       (full suite), test_{vm_lifecycle,workloads,exec,
-                      pause_resume,snapshot_restore,networking}.sh
+                      pause_resume,snapshot_restore,networking,ports}.sh
                       (each self-contained)
 assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext4,
                       initramfs.cpio.gz (some are build artifacts; .gitkeep'd)
@@ -93,10 +94,14 @@ assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext
   snapshot files remain until restore.
 - API: mounted under `/api` on `--api-listen` (default `0.0.0.0.0:3000`).
   Endpoints include `/api/health`, `/api/vms` (CRUD plus
-  `/{id}/pause|resume|snapshot|restore|exec`, nested `/{id}/network` and
-  `/{id}/workloads`). `/{id}/exec` is a synchronous wrapper over the
-  workloads API: it starts a workload, polls for the terminal state, and
-  returns the workload plus its captured logs in one response. All
+  `/{id}/pause|resume|snapshot|restore|exec`, nested `/{id}/network`,
+  `/{id}/ports` and `/{id}/workloads`). `/{id}/exec` is a synchronous wrapper
+  over the workloads API: it starts a workload, polls for the terminal state,
+  and returns the workload plus its captured logs in one response.
+  `/{id}/ports` manages the VM's exposed ports (`{port, label}` for HTTP
+  workloads, stored in `NetworkConfig.exposed_ports`, an initial set is
+  accepted in the create-VM body); it is a VM-side registry only — no host
+  port forwarding exists yet (a JWT reverse proxy is planned). All
   failures return a uniform JSON error body
   `{"error": {"code": <http status>, "message": ...}}` (see
   `hostd/src/api/error.rs`).

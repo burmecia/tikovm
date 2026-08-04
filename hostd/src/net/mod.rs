@@ -22,7 +22,7 @@ mod state;
 mod types;
 
 pub(crate) use manager::NetworkManager;
-pub(crate) use types::{NetworkConfig, TapName, VmNet};
+pub(crate) use types::{ExposedPort, NetworkConfig, TapName, VmNet};
 
 /// Host interface names are limited to 15 bytes (IFNAMSIZ - 1).
 const IFNAMSIZ_MAX: usize = 15;

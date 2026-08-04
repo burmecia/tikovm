@@ -33,6 +33,15 @@ pub(crate) enum Error {
     #[error("invalid VM state transition: {from:?} -> {to:?}")]
     InvalidStateTransition { from: VmState, to: VmState },
 
+    #[error("invalid port {0}: must be 1-65535")]
+    InvalidPort(u16),
+
+    #[error("port {port} is already exposed on vm {vm_id}")]
+    PortAlreadyExposed { vm_id: String, port: u16 },
+
+    #[error("port {port} is not exposed on vm {vm_id}")]
+    PortNotExposed { vm_id: String, port: u16 },
+
     #[error("HOSTD_API_TOKEN environment variable must be set to a non-empty value")]
     MissingApiToken,
     //#[error("{0}")]

@@ -15,7 +15,7 @@ use crate::{
     vmm::vm::{VmConfig, VmId, VmInstance, VmSnapshot},
 };
 
-use super::{exec, network, workload};
+use super::{exec, network, ports, workload};
 
 /// VM routes, to be nested under `/vms`.
 pub(crate) fn routes() -> Router<AppState> {
@@ -28,6 +28,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/{id}/restore", post(restore_vm))
         .route("/{id}/exec", post(exec::exec_command))
         .nest("/{id}/network", network::routes())
+        .nest("/{id}/ports", ports::routes())
         .nest("/{id}/workloads", workload::routes())
 }
 

@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use self::vm::{VmConfig, VmId, VmInstanceRef, VmSnapshot};
 use self::workload::{Workload, WorkloadId, WorkloadLogEntry, WorkloadSpec};
 use crate::error::Result;
+use crate::net::ExposedPort;
 
 #[async_trait]
 pub(crate) trait Vmm: Send + Sync {
@@ -30,4 +31,8 @@ pub(crate) trait Vmm: Send + Sync {
         vm_id: &VmId,
         workload_id: &WorkloadId,
     ) -> Result<Vec<WorkloadLogEntry>>;
+
+    async fn list_exposed_ports(&self, vm_id: &VmId) -> Result<Vec<ExposedPort>>;
+    async fn add_exposed_port(&self, vm_id: &VmId, port: ExposedPort) -> Result<ExposedPort>;
+    async fn remove_exposed_port(&self, vm_id: &VmId, port: u16) -> Result<()>;
 }

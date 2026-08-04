@@ -35,9 +35,11 @@ impl ApiError {
 impl From<Error> for ApiError {
     fn from(err: Error) -> Self {
         match err {
-            Error::VmNotFound(_) | Error::WorkloadNotFound(_) => {
+            Error::VmNotFound(_) | Error::WorkloadNotFound(_) | Error::PortNotExposed { .. } => {
                 Self::new(StatusCode::NOT_FOUND, err.to_string())
             }
+            Error::PortAlreadyExposed { .. } => Self::new(StatusCode::CONFLICT, err.to_string()),
+            Error::InvalidPort(_) => Self::new(StatusCode::BAD_REQUEST, err.to_string()),
             // TODO: map other error variants to more specific status codes.
             _ => Self::internal(err.to_string()),
         }

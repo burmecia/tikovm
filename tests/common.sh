@@ -116,12 +116,20 @@ api_post() {
 	fi
 }
 
-# api_raw <method> <path> -> "body\nhttp_code" on stdout
+# api_raw <method> <path> [json] -> "body\nhttp_code" on stdout
 api_raw() {
-	local method="$1" path="$2"
-	curl -sS -w '\n%{http_code}' -X "${method}" \
-		-H "Authorization: Bearer ${HOSTD_TOKEN}" \
-		"${HOSTD_URL}${path}"
+	local method="$1" path="$2" data="${3:-}"
+	if [[ -n "${data}" ]]; then
+		curl -sS -w '\n%{http_code}' -X "${method}" \
+			-H "Authorization: Bearer ${HOSTD_TOKEN}" \
+			-H "Content-Type: application/json" \
+			-d "${data}" \
+			"${HOSTD_URL}${path}"
+	else
+		curl -sS -w '\n%{http_code}' -X "${method}" \
+			-H "Authorization: Bearer ${HOSTD_TOKEN}" \
+			"${HOSTD_URL}${path}"
+	fi
 }
 
 # api_code <raw> -> the http_code part of an api_raw result
@@ -171,7 +179,7 @@ create_vm() {
 	"disk_size_mb": 1024,
 	"network_config": {
 		"allow_internet": true,
-		"ingress_ports": [],
+		"exposed_ports": [],
 		"egress": [],
 		"public_access": false
 	},

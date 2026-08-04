@@ -13,5 +13,5 @@ export FIRECRACKER_BIN="${HOME}/firecracker/build/cargo_target/x86_64-unknown-li
 # overlay disks.
 cargo build --manifest-path "${SCRIPT_DIR}/../Cargo.toml" -p hostd
 
-exec sudo -E "${SCRIPT_DIR}/../../target/debug/hostd" \
+exec sudo -E "${SCRIPT_DIR}/../target/debug/hostd" \
     --assets-dir "${SCRIPT_DIR}/../assets"

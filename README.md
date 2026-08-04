@@ -4,7 +4,7 @@
 
 `hostd` manages Firecracker microVMs and their host networking. It must run
 as root (it creates bridges/TAP devices and iptables NAT rules, and
-loop-mounts overlay disks). Use `hostd/scripts/run_hostd.sh`, which builds as
+loop-mounts overlay disks). Use `scripts/run_hostd.sh`, which builds as
 the current user and runs the binary via `sudo -E`.
 
 Networking: each project gets its own bridge (`tbr-<project_id>`) with a

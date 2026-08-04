@@ -1,6 +1,9 @@
 # Rust
 /target
 
+# VM boot artifacts (build products, see scripts/)
+/assets/*
+
 # Editor/IDE
 .vscode/
 .idea/

@@ -33,7 +33,7 @@ if fuser -n tcp "${HOSTD_PORT}" >/dev/null 2>&1; then
 	sleep 0.5
 fi
 
-setsid "${SCRIPT_DIR}/run_hostd.sh" >"${LOG_FILE}" 2>&1 &
+setsid "${SCRIPT_DIR}/../scripts/run_hostd.sh" >"${LOG_FILE}" 2>&1 &
 HOSTD_PID=$!
 
 echo "Started hostd (PID: ${HOSTD_PID}), logging to ${LOG_FILE}"

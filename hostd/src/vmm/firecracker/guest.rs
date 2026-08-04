@@ -169,7 +169,7 @@ impl FirecrackerVmm {
                     && let Some(entry) = vms.get_mut(vm_id)
                     && let Some(wl) = entry.workloads.get_mut(&WorkloadId(workload_id))
                 {
-                    wl.mark_running();
+                    wl.mark_running(Some(pid));
                 }
             }
             GuestEvent::Output {
@@ -182,7 +182,7 @@ impl FirecrackerVmm {
                     stream,
                     data,
                 };
-                let log_path = workloads_dir.join(format!("{workload_id}.log"));
+                let log_path = WorkloadId(workload_id).log_path(workloads_dir);
                 if let Ok(mut file) = fs::OpenOptions::new()
                     .create(true)
                     .append(true)
@@ -228,7 +228,7 @@ impl FirecrackerVmm {
                     for info in workloads {
                         if let Some(wl) = entry.workloads.get_mut(&WorkloadId(info.workload_id)) {
                             match info.state.as_str() {
-                                "running" => wl.mark_running(),
+                                "running" => wl.mark_running(None),
                                 "exited" => wl.mark_finished(info.exit_code, info.signal),
                                 _ => {}
                             }

@@ -53,8 +53,9 @@ scripts/              project-wide bash: run_hostd.sh,
                       download_kernel.sh, build_rootfs_ubuntu24.sh,
                       build_initramfs.sh, initramfs_init.sh
 tests/                end-to-end tests: common.sh (shared helpers), run_all.sh
-                      (full suite), test_{vm_lifecycle,workloads,pause_resume,
-                      snapshot_restore,networking}.sh (each self-contained)
+                      (full suite), test_{vm_lifecycle,workloads,exec,
+                      pause_resume,snapshot_restore,networking}.sh
+                      (each self-contained)
 assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext4,
                       initramfs.cpio.gz (some are build artifacts; .gitkeep'd)
 ```
@@ -92,8 +93,11 @@ assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext
   snapshot files remain until restore.
 - API: mounted under `/api` on `--api-listen` (default `0.0.0.0.0:3000`).
   Endpoints include `/api/health`, `/api/vms` (CRUD plus
-  `/{id}/pause|resume|snapshot|restore`, nested `/{id}/network` and
-  `/{id}/workloads`). All failures return a uniform JSON error body
+  `/{id}/pause|resume|snapshot|restore|exec`, nested `/{id}/network` and
+  `/{id}/workloads`). `/{id}/exec` is a synchronous wrapper over the
+  workloads API: it starts a workload, polls for the terminal state, and
+  returns the workload plus its captured logs in one response. All
+  failures return a uniform JSON error body
   `{"error": {"code": <http status>, "message": ...}}` (see
   `hostd/src/api/error.rs`).
 
@@ -127,7 +131,8 @@ There are no Rust integration tests and no CI configuration. Testing is:
    same `#[cfg(test)] mod tests` style when touching pure logic.
 2. **End-to-end** — `tests/run_all.sh` requires root/KVM and a
    Firecracker binary. It runs the self-contained `tests/test_*.sh` files
-   (vm_lifecycle, pause_resume, snapshot_restore, workloads, networking),
+   (vm_lifecycle, pause_resume, snapshot_restore, workloads, exec,
+   networking),
    each of which starts hostd via `run_hostd.sh` and exercises its slice of
    the API surface with curl/jq: VM create/get/list/delete, pause/
    resume, snapshot/restore, workload run/stop/logs, per-project bridge and

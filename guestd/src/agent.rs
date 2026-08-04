@@ -48,10 +48,10 @@ impl Agent {
         match request {
             Request::Start {
                 workload_id,
-                argv,
+                cmd,
                 env,
                 cwd,
-            } => self.start(workload_id, argv, env, cwd),
+            } => self.start(workload_id, cmd, env, cwd),
             Request::Stop { workload_id } => self.stop(workload_id),
             Request::List => self.list(),
         }
@@ -91,43 +91,44 @@ impl Agent {
     fn start(
         self: &Arc<Self>,
         workload_id: String,
-        argv: Vec<String>,
+        cmd: Vec<String>,
         env: HashMap<String, String>,
         cwd: Option<String>,
     ) {
-        if argv.is_empty() {
+        if cmd.is_empty() {
             self.send_event(&Event::Error {
                 workload_id: Some(workload_id),
-                message: "argv must not be empty".to_string(),
+                message: "cmd must not be empty".to_string(),
             });
             return;
         }
 
-        let mut cmd = Command::new(&argv[0]);
-        cmd.args(&argv[1..])
+        let mut command = Command::new(&cmd[0]);
+        command
+            .args(&cmd[1..])
             .envs(env)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if let Some(cwd) = cwd {
-            cmd.current_dir(cwd);
+            command.current_dir(cwd);
         }
         // Put the child in its own process group so stop() can signal the
         // whole tree (e.g. `sh -c` plus its children) at once.
         // SAFETY: setpgid is async-signal-safe and runs in the child post-fork.
         unsafe {
-            cmd.pre_exec(|| {
+            command.pre_exec(|| {
                 libc::setpgid(0, 0);
                 Ok(())
             });
         }
 
-        let mut child = match cmd.spawn() {
+        let mut child = match command.spawn() {
             Ok(c) => c,
             Err(e) => {
                 self.send_event(&Event::Error {
                     workload_id: Some(workload_id),
-                    message: format!("spawn {}: {e}", argv[0]),
+                    message: format!("spawn {}: {e}", cmd[0]),
                 });
                 return;
             }

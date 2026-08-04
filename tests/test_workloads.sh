@@ -23,7 +23,7 @@ echo "VM ${VM_ID} booted to a login prompt"
 
 # Start a workload, wait for it to exit, and check its result and logs.
 WL_CREATE="$(api_post "/api/vms/${VM_ID}/workloads" \
-	'{"argv":["sh","-c","echo hello; sleep 2; echo done; exit 3"],"env":[],"cwd":null}')"
+	'{"cmd":["sh","-c","echo hello; sleep 2; echo done; exit 3"],"env":[],"cwd":null}')"
 echo "Workload create response: ${WL_CREATE}"
 
 WL_ID="$(jq -r '.workload_id' <<<"${WL_CREATE}")"
@@ -50,7 +50,7 @@ echo "Workload ${WL_ID} logs contain expected output"
 
 # A long-running workload can be stopped, ending up in state "stopped".
 WL2_CREATE="$(api_post "/api/vms/${VM_ID}/workloads" \
-	'{"argv":["sleep","300"],"env":[],"cwd":null}')"
+	'{"cmd":["sleep","300"],"env":[],"cwd":null}')"
 WL2_ID="$(jq -r '.workload_id' <<<"${WL2_CREATE}")"
 if [[ -z "${WL2_ID}" || "${WL2_ID}" == "null" ]]; then
 	echo "Failed to extract workload id from create response: ${WL2_CREATE}"

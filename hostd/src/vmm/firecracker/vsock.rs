@@ -25,7 +25,7 @@ pub(super) const GUESTD_PORT: u32 = 5000;
 pub(super) enum GuestRequest {
     Start {
         workload_id: String,
-        argv: Vec<String>,
+        cmd: Vec<String>,
         env: HashMap<String, String>,
         cwd: Option<String>,
     },

@@ -378,8 +378,8 @@ impl Vmm for FirecrackerVmm {
     /// Start a workload in a started VM: send guestd the command and track
     /// the resulting process's lifecycle and output.
     async fn start_workload(&self, vm_id: &VmId, spec: WorkloadSpec) -> Result<Workload> {
-        if spec.argv.is_empty() {
-            return Err(Error::vmm("workload argv must not be empty"));
+        if spec.cmd.is_empty() {
+            return Err(Error::vmm("workload cmd must not be empty"));
         }
 
         {
@@ -415,7 +415,7 @@ impl Vmm for FirecrackerVmm {
 
         let request = GuestRequest::Start {
             workload_id: workload.workload_id.0.clone(),
-            argv: workload.spec.argv.clone(),
+            cmd: workload.spec.cmd.clone(),
             env: workload
                 .spec
                 .env
@@ -509,7 +509,7 @@ impl Vmm for FirecrackerVmm {
             if !entry.workloads.contains_key(workload_id) {
                 return Err(Error::WorkloadNotFound(workload_id.to_string()));
             }
-            entry.workloads_dir.join(format!("{workload_id}.log"))
+            workload_id.log_path(&entry.workloads_dir)
         };
         let contents = match fs::read_to_string(&log_path) {
             Ok(c) => c,

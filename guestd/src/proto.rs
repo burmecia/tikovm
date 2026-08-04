@@ -1,6 +1,6 @@
 //! The guestd control protocol: newline-delimited JSON, both directions.
 //!
-//!   host -> guest: {"type":"start","workload_id":..,"argv":[..],"env":{..},"cwd":..}
+//!   host -> guest: {"type":"start","workload_id":..,"cmd":[..],"env":{..},"cwd":..}
 //!                  {"type":"stop","workload_id":..}
 //!                  {"type":"list"}
 //!   guest -> host: {"type":"started","workload_id":..,"pid":..}
@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub(crate) enum Request {
     Start {
         workload_id: String,
-        argv: Vec<String>,
+        cmd: Vec<String>,
         #[serde(default)]
         env: HashMap<String, String>,
         cwd: Option<String>,

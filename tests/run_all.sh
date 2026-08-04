@@ -14,6 +14,7 @@ TESTS=(
 	test_pause_resume.sh
 	test_snapshot_restore.sh
 	test_workloads.sh
+	test_exec.sh
 	test_networking.sh
 )
 

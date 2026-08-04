@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +16,12 @@ impl WorkloadId {
     pub(crate) fn new_random() -> Self {
         Self(random_id("wl"))
     }
+
+    /// Path of the workload's captured-output log file under the VM's
+    /// workloads dir (JSON lines, one [`WorkloadLogEntry`] per line).
+    pub(crate) fn log_path(&self, workloads_dir: &Path) -> PathBuf {
+        workloads_dir.join(format!("{self}.log"))
+    }
 }
 
 impl std::fmt::Display for WorkloadId {
@@ -28,10 +36,10 @@ impl From<String> for WorkloadId {
     }
 }
 
-/// What to run inside the guest: argv plus optional env and working dir.
+/// What to run inside the guest: cmd plus optional env and working dir.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct WorkloadSpec {
-    pub argv: Vec<String>,
+    pub cmd: Vec<String>,
     #[serde(default)]
     pub env: Vec<EnvVar>,
     #[serde(default)]
@@ -58,6 +66,9 @@ pub(crate) struct Workload {
     pub vm_id: VmId,
     pub spec: WorkloadSpec,
     pub state: WorkloadState,
+    /// Pid of the process inside the guest, set once guestd confirms the
+    /// spawn (matches the `pid` of guestd's `started` event).
+    pub pid: Option<u32>,
     pub exit_code: Option<i32>,
     pub signal: Option<i32>,
     pub created_at: DateTime<Utc>,
@@ -77,6 +88,7 @@ impl Workload {
             vm_id: vm_id.clone(),
             spec,
             state: WorkloadState::Starting,
+            pid: None,
             exit_code: None,
             signal: None,
             created_at: Utc::now(),
@@ -91,10 +103,13 @@ impl Workload {
     }
 
     /// guestd confirmed the process spawned.
-    pub(crate) fn mark_running(&mut self) {
+    pub(crate) fn mark_running(&mut self, pid: Option<u32>) {
         if self.state == WorkloadState::Starting {
             self.state = WorkloadState::Running;
             self.started_at = Some(Utc::now());
+        }
+        if pid.is_some() {
+            self.pid = pid;
         }
     }
 

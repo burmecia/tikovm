@@ -13,7 +13,9 @@ Cargo workspace with two binary crates:
   resume, snapshot, restore, destroy), per-project host networking (bridges,
   TAP devices, iptables NAT), and "workloads" (processes executed inside a
   guest). It drives each VM's Firecracker process over its API Unix socket
-  and talks to the guest agent over vsock.
+  and talks to the guest agent over vsock. It also runs a JWT-authenticated
+  HTTP reverse proxy (hyper) on a second listener that forwards requests to
+  the exposed ports of VMs.
 - **`guestd/`** — the guest agent. A small, dependency-light binary that runs
   inside every VM (installed as a systemd service in the guest image). It
   listens on vsock port 5000 and executes workloads on hostd's request,
@@ -30,11 +32,18 @@ guest image.
 Cargo.toml            workspace manifest (members: hostd, guestd); all deps
                       are pinned as workspace dependencies here
 hostd/
-  src/main.rs         CLI args (clap), wiring: NetworkManager -> FirecrackerVmm -> ApiServer
+  src/main.rs         CLI args (clap), wiring: NetworkManager -> FirecrackerVmm
+                      -> ApiServer + ProxyServer (run via tokio::try_join!)
   src/error.rs        crate-wide Error/Result (thiserror)
   src/api/            axum HTTP API: server.rs (router + Bearer auth middleware),
                       error.rs (uniform JSON errors),
                       routes/{health,vm,network,ports,workload}.rs
+  src/proxy/          JWT-authenticated reverse proxy for exposed ports:
+                      server.rs (raw TcpListener accept loop serving HTTP/1.1
+                      via hyper — the seam for future raw-TCP proxying),
+                      token.rs (HS256 JWT mint/verify against a per-boot
+                      random secret),
+                      http.rs (auth + live-state revalidation + forwarding)
   src/net/            host networking: cidr.rs (IPv4 CIDR math), state.rs (pure
                       IPAM allocator, unit-tested), host.rs (`ip`/`iptables`
                       shell-outs), manager.rs (NetworkManager: ties state to
@@ -55,7 +64,7 @@ scripts/              project-wide bash: run_hostd.sh,
                       build_initramfs.sh, initramfs_init.sh
 tests/                end-to-end tests: common.sh (shared helpers), run_all.sh
                       (full suite), test_{vm_lifecycle,workloads,exec,
-                      pause_resume,snapshot_restore,networking,ports}.sh
+                      pause_resume,snapshot_restore,networking,ports,proxy}.sh
                       (each self-contained)
 assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext4,
                       initramfs.cpio.gz (some are build artifacts; .gitkeep'd)
@@ -64,7 +73,8 @@ assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext
 ## Technology stack and runtime architecture
 
 - Rust, edition 2024, `rust-version = 1.96`; tokio ("full"), axum 0.8,
-  tower-http, serde/serde_json, clap (derive), tracing, thiserror.
+  tower-http, hyper + hyper-util + http-body-util (the proxy), jsonwebtoken,
+  serde/serde_json, clap (derive), tracing, thiserror.
 - Firecracker is an **external binary**, located via the `FIRECRACKER_BIN`
   env var or found on PATH (`vmm/firecracker/setup.rs` `from_path_or_env`).
 - Boot chain per VM: Firecracker boots `assets/vmlinux-*.bin` with
@@ -100,18 +110,28 @@ assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext
   and returns the workload plus its captured logs in one response.
   `/{id}/ports` manages the VM's exposed ports (`{port, label}` for HTTP
   workloads, stored in `NetworkConfig.exposed_ports`, an initial set is
-  accepted in the create-VM body); it is a VM-side registry only — no host
-  port forwarding exists yet (a JWT reverse proxy is planned). All
-  failures return a uniform JSON error body
-  `{"error": {"code": <http status>, "message": ...}}` (see
+  accepted in the create-VM body), and `POST /{id}/ports/{port}/token` mints
+  an ephemeral JWT for the proxy. All failures return a uniform JSON error
+  body `{"error": {"code": <http status>, "message": ...}}` (see
   `hostd/src/api/error.rs`).
+- Proxy: a second server on `--proxy-listen` (default `0.0.0.0:8080`)
+  reverse-proxies HTTP requests to `http://<guest_ip>:<port>`. Each request
+  carries `Authorization: Bearer <jwt>`; the JWT (HS256, per-boot random
+  secret — restart invalidates all tokens) names the target VM + port. The
+  proxy re-validates against live state on every request (VM exists and is
+  `Started`, port still in `exposed_ports`), so unexposing a port revokes
+  access immediately. Errors use the same uniform JSON body as the API. The
+  raw accept loop is the seam for future raw-TCP proxying (e.g. Postgres:
+  read the length-prefixed StartupMessage, extract the JWT from a startup
+  parameter, strip it, splice bytes); WebSocket upgrades and TLS termination
+  are out of scope.
 
 ## Build, run, and test commands
 
 ```bash
 cargo build -p hostd                 # build the host daemon
 cargo build -p guestd                # build the guest agent
-cargo test                           # unit tests (hostd/src/net/state.rs, cidr.rs)
+cargo test                           # unit tests (net state/cidr/types, proxy token)
 cargo clippy                         # lints are kept clean (see git history)
 scripts/run_hostd.sh                   # build as current user, run via sudo -E
 tests/run_all.sh                       # full end-to-end suite (see below)
@@ -132,12 +152,14 @@ Runtime requirements and environment:
 There are no Rust integration tests and no CI configuration. Testing is:
 
 1. **Unit tests** — `cargo test`; coverage exists for the pure networking
-   logic (`net/state.rs` IPAM allocator, `net/cidr.rs`). Add tests in the
-   same `#[cfg(test)] mod tests` style when touching pure logic.
+   logic (`net/state.rs` IPAM allocator, `net/cidr.rs`), the exposed-ports
+   registry (`net/types.rs`), and proxy JWT mint/verify (`proxy/token.rs`).
+   Add tests in the same `#[cfg(test)] mod tests` style when touching pure
+   logic.
 2. **End-to-end** — `tests/run_all.sh` requires root/KVM and a
    Firecracker binary. It runs the self-contained `tests/test_*.sh` files
    (vm_lifecycle, pause_resume, snapshot_restore, workloads, exec,
-   networking),
+   networking, ports, proxy),
    each of which starts hostd via `run_hostd.sh` and exercises its slice of
    the API surface with curl/jq: VM create/get/list/delete, pause/
    resume, snapshot/restore, workload run/stop/logs, per-project bridge and

@@ -13,6 +13,9 @@ export FIRECRACKER_BIN="${HOME}/firecracker/build/cargo_target/x86_64-unknown-li
 HOSTD_ADDR="127.0.0.1:3000"
 HOSTD_URL="http://${HOSTD_ADDR}"
 HOSTD_PORT="${HOSTD_ADDR##*:}"
+# The proxy server (--proxy-listen default) forwards to guest exposed ports.
+PROXY_ADDR="127.0.0.1:8080"
+PROXY_URL="http://${PROXY_ADDR}"
 HOSTD_TOKEN="${TIKOVM_HOSTD_API_TOKEN:-xxx}"
 LOG_FILE="$(mktemp -t tikovm-hostd-e2e.XXXXXX.log)"
 
@@ -24,13 +27,18 @@ CREATED_VMS=()
 
 start_hostd() {
 	# Make sure no stale process (e.g. left over from a previous manual run) is
-	# already bound to the port, otherwise the readiness check below could pass
-	# against that stale server instead of the instance this script starts.
-	if fuser -n tcp "${HOSTD_PORT}" >/dev/null 2>&1; then
-		echo "Port ${HOSTD_PORT} is already in use, killing existing listener(s)"
-		fuser -k -n tcp "${HOSTD_PORT}" >/dev/null 2>&1 || sudo fuser -k -n tcp "${HOSTD_PORT}" >/dev/null 2>&1 || true
-		sleep 0.5
-	fi
+	# already bound to the API or proxy port, otherwise the readiness check
+	# below could pass against that stale server instead of the instance this
+	# script starts. hostd runs as root via sudo, so a non-root fuser cannot
+	# see its sockets — check with sudo.
+	local port
+	for port in "${HOSTD_PORT}" "${PROXY_ADDR##*:}"; do
+		if sudo fuser -n tcp "${port}" >/dev/null 2>&1; then
+			echo "Port ${port} is already in use, killing existing listener(s)"
+			sudo fuser -k -n tcp "${port}" >/dev/null 2>&1 || true
+			sleep 0.5
+		fi
+	done
 
 	setsid "${REPO_ROOT}/scripts/run_hostd.sh" >"${LOG_FILE}" 2>&1 &
 	HOSTD_PID=$!

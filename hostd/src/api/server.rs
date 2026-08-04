@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 
 use crate::error::{Error, Result};
+use crate::proxy::ProxyTokens;
 use crate::vmm::Vmm;
 
 use super::error::ApiError;
@@ -29,15 +30,17 @@ struct AuthState {
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) vmm: Arc<dyn Vmm>,
+    pub(crate) tokens: Arc<ProxyTokens>,
 }
 
 pub(crate) struct ApiServer {
     token: Arc<str>,
     vmm: Arc<dyn Vmm>,
+    tokens: Arc<ProxyTokens>,
 }
 
 impl ApiServer {
-    pub(crate) fn new(vmm: Arc<dyn Vmm>) -> Result<Self> {
+    pub(crate) fn new(vmm: Arc<dyn Vmm>, tokens: Arc<ProxyTokens>) -> Result<Self> {
         let token = std::env::var(API_TOKEN_ENV_VAR)
             .ok()
             .filter(|t| !t.is_empty())
@@ -46,6 +49,7 @@ impl ApiServer {
         Ok(Self {
             token: token.into(),
             vmm,
+            tokens,
         })
     }
 
@@ -72,6 +76,7 @@ impl ApiServer {
     fn api_routes(&self) -> Router {
         let state = AppState {
             vmm: self.vmm.clone(),
+            tokens: self.tokens.clone(),
         };
 
         Router::new()

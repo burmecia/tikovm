@@ -42,6 +42,9 @@ pub(crate) enum Error {
     #[error("port {port} is not exposed on vm {vm_id}")]
     PortNotExposed { vm_id: String, port: u16 },
 
+    #[error("proxy token error: {0}")]
+    ProxyToken(String),
+
     #[error("HOSTD_API_TOKEN environment variable must be set to a non-empty value")]
     MissingApiToken,
     //#[error("{0}")]
@@ -59,6 +62,10 @@ impl Error {
 
     pub(crate) fn net(msg: impl Into<String>) -> Self {
         Error::Net(msg.into())
+    }
+
+    pub(crate) fn proxy_token(msg: impl Into<String>) -> Self {
+        Error::ProxyToken(msg.into())
     }
 }
 

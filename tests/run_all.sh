@@ -17,6 +17,7 @@ TESTS=(
 	test_exec.sh
 	test_networking.sh
 	test_ports.sh
+	test_proxy.sh
 )
 
 for t in "${TESTS[@]}"; do

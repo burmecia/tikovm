@@ -52,7 +52,9 @@ guestd/
 scripts/              project-wide bash: run_hostd.sh,
                       download_kernel.sh, build_rootfs_ubuntu24.sh,
                       build_initramfs.sh, initramfs_init.sh
-tests/                test_e2e.sh: full end-to-end test of the hostd API
+tests/                end-to-end tests: common.sh (shared helpers), run_all.sh
+                      (full suite), test_{vm_lifecycle,workloads,pause_resume,
+                      snapshot_restore,networking}.sh (each self-contained)
 assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext4,
                       initramfs.cpio.gz (some are build artifacts; .gitkeep'd)
 ```
@@ -103,7 +105,7 @@ cargo build -p guestd                # build the guest agent
 cargo test                           # unit tests (hostd/src/net/state.rs, cidr.rs)
 cargo clippy                         # lints are kept clean (see git history)
 scripts/run_hostd.sh                   # build as current user, run via sudo -E
-tests/test_e2e.sh                      # full end-to-end test (see below)
+tests/run_all.sh                       # full end-to-end suite (see below)
 ```
 
 Runtime requirements and environment:
@@ -123,12 +125,16 @@ There are no Rust integration tests and no CI configuration. Testing is:
 1. **Unit tests** — `cargo test`; coverage exists for the pure networking
    logic (`net/state.rs` IPAM allocator, `net/cidr.rs`). Add tests in the
    same `#[cfg(test)] mod tests` style when touching pure logic.
-2. **End-to-end** — `tests/test_e2e.sh` requires root/KVM and a
-   Firecracker binary. It starts hostd via `run_hostd.sh`, then exercises
-   the whole API surface with curl/jq: VM create/get/list/delete, pause/
+2. **End-to-end** — `tests/run_all.sh` requires root/KVM and a
+   Firecracker binary. It runs the self-contained `tests/test_*.sh` files
+   (vm_lifecycle, pause_resume, snapshot_restore, workloads, networking),
+   each of which starts hostd via `run_hostd.sh` and exercises its slice of
+   the API surface with curl/jq: VM create/get/list/delete, pause/
    resume, snapshot/restore, workload run/stop/logs, per-project bridge and
    TAP topology, guest ping from the host, and teardown of networking when
-   the project's last VM is deleted. Run this after changes to the API,
+   the project's last VM is deleted. Shared scaffolding (hostd start/stop,
+   API helpers, VM/boot/workload polling) lives in `tests/common.sh`. Run
+   the suite (or a single `tests/test_*.sh` file) after changes to the API,
    VMM lifecycle, or networking. There is no Rust unit-test coverage for
    the VMM or API layers — the e2e script is the safety net there.
 

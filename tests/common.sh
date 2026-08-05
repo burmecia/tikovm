@@ -21,7 +21,6 @@ LOG_FILE="$(mktemp -t tikovm-hostd-e2e.XXXXXX.log)"
 
 # Set by start_hostd; VM ids the test created, for best-effort cleanup.
 HOSTD_PID=""
-CREATED_VMS=()
 
 # --- hostd process management ----------------------------------------------
 
@@ -86,18 +85,25 @@ stop_hostd() {
 # --- VM registration / best-effort cleanup ----------------------------------
 # A test that fails halfway would otherwise leave its VMs (and the project
 # bridge/TAPs behind them) running, breaking any test file that runs next.
+#
+# The registry is a FILE, not an array: create_vm is invoked via $(...), which
+# runs in a subshell, so appending to an array there would be lost and
+# cleanup_vms would silently do nothing (leaking Firecracker processes).
+
+CREATED_VMS_FILE="$(mktemp -t tikovm-created-vms.XXXXXX)"
 
 register_vm() {
-	CREATED_VMS+=("$1")
+	echo "$1" >>"${CREATED_VMS_FILE}"
 }
 
 cleanup_vms() {
 	local id
-	for id in ${CREATED_VMS[@]+"${CREATED_VMS[@]}"}; do
+	while IFS= read -r id; do
+		[[ -n "${id}" ]] || continue
 		curl -sS -o /dev/null -X DELETE \
 			-H "Authorization: Bearer ${HOSTD_TOKEN}" \
 			"${HOSTD_URL}/api/vms/${id}" >/dev/null 2>&1 || true
-	done
+	done <"${CREATED_VMS_FILE}"
 }
 
 # --- API helpers -------------------------------------------------------------
@@ -171,17 +177,18 @@ expect_error_code() {
 
 # --- VM helpers ----------------------------------------------------------------
 
-# create_vm <name> [project_id]: POST the standard test VM, register it for
-# cleanup and echo its id. The full response goes to stderr for debugging.
+# create_vm <name> [project_id] [image]: POST the standard test VM, register
+# it for cleanup and echo its id. The full response goes to stderr for
+# debugging. image defaults to "ubuntu-24".
 create_vm() {
-	local name="$1" project_id="${2:-123}"
+	local name="$1" project_id="${2:-123}" image="${3:-ubuntu-24}"
 	local payload response id
 	payload="$(cat <<EOF
 {
 	"name": "${name}",
 	"project_id": ${project_id},
 	"mode": "ephemeral",
-	"image": "ubuntu-24",
+	"image": "${image}",
 	"cpus": 1,
 	"memory_mb": 512,
 	"disk_size_mb": 1024,

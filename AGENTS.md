@@ -60,8 +60,11 @@ guestd/
   src/connection.rs   per-connection request dispatch
   src/vsock.rs        vsock listener/stream via libc
 scripts/              project-wide bash: run_hostd.sh,
-                      download_kernel.sh, build_rootfs_ubuntu24.sh,
-                      build_initramfs.sh, initramfs_init.sh
+                      download_kernel.sh,
+                      build_initramfs.sh, initramfs_init.sh,
+                      rootfs/ (guest image builds: common.sh holds the shared
+                      debootstrap/configure/verify logic, sourced by the
+                      per-image build_rootfs_*.sh entry scripts)
 tests/                end-to-end tests: common.sh (shared helpers), run_all.sh
                       (full suite), test_{vm_lifecycle,workloads,exec,
                       pause_resume,snapshot_restore,networking,ports,proxy}.sh
@@ -177,11 +180,24 @@ blindly:
 
 - `download_kernel.sh` — fetches the latest Firecracker CI kernel from S3
   and symlinks `vmlinux.bin`.
-- `build_rootfs_ubuntu24.sh` — builds `ubuntu-24.04-rootfs.ext4` via
-  debootstrap (Ubuntu 24.04 minbase + systemd), installing the
-  release-built guestd as a systemd service. Note the rootfs must not
-  hardcode a network address: hostd seeds per-VM static network config into
-  the overlay upper layer at VM creation time.
+- `rootfs/common.sh` — shared rootfs build logic (debootstrap of Ubuntu
+  24.04 minbase + systemd, release-built guestd installed as a systemd
+  service, image verification + e2fsck), sourced by the per-image entry
+  scripts as `build_rootfs <image> <extra_packages> <apt_mirror>
+  [verify_cmd...]`. Note the rootfs must not hardcode a network address:
+  hostd seeds per-VM static network config into the overlay upper layer at
+  VM creation time.
+- `rootfs/build_rootfs_ubuntu24.sh` — builds `ubuntu-24.04-rootfs.ext4`
+  (base image).
+- `rootfs/build_rootfs_python312.sh` — same base plus `python3` (3.12 on
+  noble), producing `python-3.12-rootfs.ext4`; uses the https apt mirror
+  (this host's egress blocks plain http/80). New images must also be
+  registered in `VmConfig::rootfs_file()` (`hostd/src/vmm/vm.rs`) to be
+  selectable via the create-VM `image` field.
+- `rootfs/build_rootfs_node22.sh` — same base plus Node.js 22 (LTS) from
+  the official nodejs.org tarball unpacked into `/usr/local` via the
+  `extra_setup` hook (noble's `nodejs` package is only Node 18), producing
+  `node-22-rootfs.ext4`.
 - `build_initramfs.sh` — packs busybox + `initramfs_init.sh` into
   `initramfs.cpio.gz` (newc cpio, gzipped). `initramfs.cpio.gz` is
   git-ignored as a build artifact.
@@ -216,5 +232,5 @@ blindly:
   (`vmm/firecracker/setup.rs`) — be aware of the reduced sandboxing when
   modifying the spawn configuration.
 - The guest image sets a default `root:root` password and enables root SSH
-  login (`build_rootfs_ubuntu24.sh`); treat guest images as test-only.
+  login (`scripts/rootfs/common.sh`); treat guest images as test-only.
 - `.gitignore` excludes `.env`; do not write secrets into tracked files.

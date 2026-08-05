@@ -186,6 +186,7 @@ impl VmConfig {
     pub(crate) fn rootfs_file(&self) -> Result<String> {
         match self.image.as_str() {
             "node-22" => Ok("node-22-rootfs.ext4".to_string()),
+            "python-3.12" => Ok("python-3.12-rootfs.ext4".to_string()),
             "ubuntu-24" => Ok("ubuntu-24.04-rootfs.ext4".to_string()),
             _ => Err(Error::InvalidImage(self.image.clone())),
         }

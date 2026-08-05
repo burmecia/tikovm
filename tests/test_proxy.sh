@@ -15,29 +15,14 @@ trap 'cleanup_vms; stop_hostd' EXIT
 
 start_hostd
 
-VM_ID="$(create_vm "proxy-vm")"
+# The python-3.12 image ships python3, so no in-guest setup is needed.
+VM_ID="$(create_vm "proxy-vm" 123 "python-3.12")"
 echo "Created VM: ${VM_ID}"
 
 wait_serial_boot "${VM_ID}"
 echo "VM ${VM_ID} booted to a login prompt"
 
-# Install a web server in the guest and seed a file to fetch. The guest
-# image has no python3, but it has working apt + egress NAT. Notes:
-# - Run the install as a workload, not exec: apt can exceed the exec
-#   endpoint's fixed timeout.
-# - Rewrite the apt sources to https:// first: this host's egress blocks
-#   plain http/80, which the stock sources.list uses.
-echo "Installing python3 in the guest (apt)..."
-WL_INSTALL="$(api_post "/api/vms/${VM_ID}/workloads" \
-	'{"cmd":["sh","-c","sed -i \"s|http://|https://|g\" /etc/apt/sources.list && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3"],"env":[],"cwd":null}')"
-WL_INSTALL_ID="$(jq -r '.workload_id' <<<"${WL_INSTALL}")"
-wait_workload_state "${VM_ID}" "${WL_INSTALL_ID}" "exited" 1200
-if [[ "$(jq -r '.exit_code' <<<"${WL_GET}")" != "0" ]]; then
-	echo "python3 install failed: ${WL_GET}"
-	echo "--- install workload logs ---"
-	api_get "/api/vms/${VM_ID}/workloads/${WL_INSTALL_ID}/logs" | jq -r '.[].data'
-	exit 1
-fi
+# Seed a file to fetch.
 api_post "/api/vms/${VM_ID}/exec" \
 	'{"cmd":["sh","-c","echo hello-from-guest > /tmp/hello.txt"],"env":[],"cwd":null}' >/dev/null
 

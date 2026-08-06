@@ -1,3 +1,4 @@
+pub(crate) mod activity;
 pub(crate) mod firecracker;
 mod utils;
 pub(crate) mod vm;
@@ -5,6 +6,7 @@ pub(crate) mod workload;
 
 use async_trait::async_trait;
 
+use self::activity::ActivityTracker;
 use self::vm::{VmConfig, VmId, VmInstanceRef, VmSnapshot};
 use self::workload::{Workload, WorkloadId, WorkloadLogEntry, WorkloadSpec};
 use crate::error::Result;
@@ -21,6 +23,13 @@ pub(crate) trait Vmm: Send + Sync {
     async fn snapshot_vm(&self, vm_id: &VmId) -> Result<VmSnapshot>;
     async fn restore_vm(&self, vm_id: &VmId) -> Result<()>;
     async fn destroy_vm(&self, vm_id: &VmId) -> Result<()>;
+
+    /// Bring a suspended VM back to `Started` (restoring from its snapshot),
+    /// deduplicating concurrent wake-ups. A no-op for a started VM.
+    async fn ensure_started(&self, vm_id: &VmId) -> Result<()>;
+
+    /// Proxy activity per VM (auto-suspend input); see `activity` module.
+    fn activity(&self) -> ActivityTracker;
 
     async fn start_workload(&self, vm_id: &VmId, spec: WorkloadSpec) -> Result<Workload>;
     async fn stop_workload(&self, vm_id: &VmId, workload_id: &WorkloadId) -> Result<Workload>;

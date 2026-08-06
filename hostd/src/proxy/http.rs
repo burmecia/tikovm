@@ -15,10 +15,13 @@ use hyper::header::{
 };
 use hyper::{Request, Response, StatusCode, body::Incoming, header::HeaderName};
 use serde_json::json;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use tracing::{debug, warn};
 
 use super::server::ProxyState;
 use super::token::{Claims, Proto};
+use crate::vmm::activity::ActivityGuard;
 use crate::vmm::vm::{VmId, VmState};
 
 /// Body type shared by proxied upstream responses and local error responses.
@@ -84,6 +87,11 @@ async fn forward(
     req: Request<Incoming>,
 ) -> Result<Response<ProxyBody>, ProxyError> {
     let claims = authenticate(state, &req)?;
+    // Track the request for auto-suspend: this is both the HTTP activity
+    // signal and the gate's in-flight count. The guard lives in the
+    // response body so a streamed reply keeps the VM "active" until the
+    // last byte is sent.
+    let guard = state.vmm.activity().track(&VmId::from(claims.vm_id.clone()));
     let guest_ip = resolve_target(state, &claims).await?;
 
     let authority = format!("{guest_ip}:{}", claims.port);
@@ -126,8 +134,42 @@ async fn forward(
         }
     }
     response
-        .body(body.boxed())
+        .body(
+            GuardedBody {
+                inner: body.boxed(),
+                _guard: guard,
+            }
+            .boxed(),
+        )
         .map_err(|e| ProxyError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// A proxied response body that keeps the VM's activity guard alive until
+/// the body is fully sent or dropped: `in_flight` covers the whole streamed
+/// response, so auto-suspend cannot snapshot a VM mid-reply.
+struct GuardedBody {
+    inner: ProxyBody,
+    _guard: ActivityGuard,
+}
+
+impl hyper::body::Body for GuardedBody {
+    type Data = Bytes;
+    type Error = hyper::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+        Pin::new(&mut self.inner).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.inner.size_hint()
+    }
 }
 
 /// Extract and verify the bearer JWT; the claims name the target VM + port.
@@ -153,7 +195,8 @@ fn authenticate(state: &ProxyState, req: &Request<Incoming>) -> Result<Claims, P
 }
 
 /// Re-validate the claimed target against live VM state and return the
-/// guest IP to forward to.
+/// guest IP to forward to. A suspended VM is woken (restored from its
+/// snapshot) first: the requester just sees a slow first request.
 async fn resolve_target(
     state: &ProxyState,
     claims: &Claims,
@@ -165,30 +208,83 @@ async fn resolve_target(
         .await
         .map_err(|e| ProxyError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| ProxyError::new(StatusCode::NOT_FOUND, "vm not found"))?;
-    let instance = instance_ref
+
+    let vm_state = instance_ref
         .lock()
-        .map_err(|e| ProxyError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| ProxyError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .state;
 
-    if instance.state != VmState::Started {
-        return Err(ProxyError::new(
-            StatusCode::CONFLICT,
-            format!("vm is not running (state: {:?})", instance.state),
-        ));
+    // Wake an auto-suspended VM before validating; ensure_started
+    // deduplicates concurrent wake-ups.
+    if matches!(
+        vm_state,
+        VmState::Suspended | VmState::Suspending | VmState::Restoring
+    ) {
+        state
+            .vmm
+            .ensure_started(&vm_id)
+            .await
+            .map_err(|e| ProxyError::new(StatusCode::CONFLICT, e.to_string()))?;
     }
 
-    let exposed = &instance.vm_config.network_config.exposed_ports;
-    if !exposed.iter().any(|p| p.port == claims.port) {
-        return Err(ProxyError::new(
-            StatusCode::FORBIDDEN,
-            format!("port {} is no longer exposed on this vm", claims.port),
-        ));
+    // Validate against live state in a short scope so the instance lock
+    // (a std MutexGuard, which is !Send) never crosses an await.
+    let guest_ip = {
+        let instance = instance_ref
+            .lock()
+            .map_err(|e| ProxyError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        if instance.state != VmState::Started {
+            return Err(ProxyError::new(
+                StatusCode::CONFLICT,
+                format!("vm is not running (state: {:?})", instance.state),
+            ));
+        }
+
+        let exposed = &instance.vm_config.network_config.exposed_ports;
+        if !exposed.iter().any(|p| p.port == claims.port) {
+            return Err(ProxyError::new(
+                StatusCode::FORBIDDEN,
+                format!("port {} is no longer exposed on this vm", claims.port),
+            ));
+        }
+
+        instance
+            .net
+            .as_ref()
+            .map(|net| net.guest_ip)
+            .ok_or_else(|| ProxyError::new(StatusCode::SERVICE_UNAVAILABLE, "vm has no guest ip"))?
+    };
+
+    if vm_state != VmState::Started {
+        // The VM was just woken: its listen sockets survive the snapshot,
+        // but give Firecracker's resume a short grace by probing the port
+        // before forwarding real traffic to it.
+        wait_for_port(guest_ip, claims.port).await?;
     }
 
-    instance
-        .net
-        .as_ref()
-        .map(|net| net.guest_ip)
-        .ok_or_else(|| ProxyError::new(StatusCode::SERVICE_UNAVAILABLE, "vm has no guest ip"))
+    Ok(guest_ip)
+}
+
+/// Probe `guest_ip:port` until it accepts TCP connections or the deadline
+/// passes. Used after a wake-from-suspend so the first proxied request does
+/// not race the guest's resumed network stack.
+async fn wait_for_port(guest_ip: std::net::IpAddr, port: u16) -> Result<(), ProxyError> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match tokio::net::TcpStream::connect((guest_ip, port)).await {
+            Ok(_) => return Ok(()),
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+            Err(e) => {
+                return Err(ProxyError::new(
+                    StatusCode::BAD_GATEWAY,
+                    format!("guest port {port} did not come up after wake: {e}"),
+                ));
+            }
+        }
+    }
 }
 
 fn error_response(err: &ProxyError) -> Response<ProxyBody> {

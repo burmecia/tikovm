@@ -48,15 +48,19 @@ hostd/
                       IPAM allocator, unit-tested), host.rs (`ip`/`iptables`
                       shell-outs), manager.rs (NetworkManager: ties state to
                       host effects, persists network_state.json), types.rs
-  src/vmm/            Vmm trait (mod.rs), vm.rs (VmConfig/VmInstance/VmState),
+  src/vmm/            Vmm trait (mod.rs), activity.rs (per-VM proxy activity
+                      tracker for auto-suspend), vm.rs
+                      (VmConfig/VmInstance/VmState),
                       workload.rs, firecracker/ (the only Vmm implementation):
-                      vmm.rs (FirecrackerVmm), setup.rs (spawn + pre-boot API
+                      vmm.rs (FirecrackerVmm + auto-suspend gate/loops),
+                      setup.rs (spawn + pre-boot API
                       config), api.rs (Firecracker API socket client),
                       vsock.rs (channel to guestd), guest.rs
 guestd/
   src/main.rs         vsock accept loop, one thread per host connection
   src/proto.rs        newline-delimited JSON control protocol (both directions)
   src/agent.rs        workload spawn/stop/track, output forwarding
+  src/monitor.rs      auto-suspend idle detector (runs the VM's idle_check_cmd)
   src/connection.rs   per-connection request dispatch
   src/vsock.rs        vsock listener/stream via libc
 scripts/              project-wide bash: run_hostd.sh,
@@ -67,7 +71,8 @@ scripts/              project-wide bash: run_hostd.sh,
                       per-image build_rootfs_*.sh entry scripts)
 tests/                end-to-end tests: common.sh (shared helpers), run_all.sh
                       (full suite), test_{vm_lifecycle,workloads,exec,
-                      pause_resume,snapshot_restore,networking,ports,proxy}.sh
+                      pause_resume,snapshot_restore,networking,ports,proxy,
+                      auto_suspend}.sh
                       (each self-contained)
 assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext4,
                       initramfs.cpio.gz (some are build artifacts; .gitkeep'd)
@@ -121,13 +126,31 @@ assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext
   reverse-proxies HTTP requests to `http://<guest_ip>:<port>`. Each request
   carries `Authorization: Bearer <jwt>`; the JWT (HS256, per-boot random
   secret — restart invalidates all tokens) names the target VM + port. The
-  proxy re-validates against live state on every request (VM exists and is
-  `Started`, port still in `exposed_ports`), so unexposing a port revokes
-  access immediately. Errors use the same uniform JSON body as the API. The
+  proxy re-validates against live state on every request (VM exists, port
+  still in `exposed_ports`; a `Suspended` VM is restored first — see
+  auto-suspend below), so unexposing a port revokes access immediately. Errors use the same uniform JSON body as the API. The
   raw accept loop is the seam for future raw-TCP proxying (e.g. Postgres:
   read the length-prefixed StartupMessage, extract the JWT from a startup
   parameter, strip it, splice bytes); WebSocket upgrades and TLS termination
   are out of scope.
+- Auto-suspend: a `permanent` VM created with an `auto_suspend`
+  (`VmConfig.auto_suspend` = `{idle_timeout_secs, idle_check_cmd,
+  check_interval_secs}`) is snapshotted (via `snapshot_vm`, so the
+  Firecracker process stops and the VM consumes no CPU/memory) once idle,
+  and restored transparently by the next proxied request or `/{id}/exec`
+  (`Vmm::ensure_started`, single-flighted per VM). Two detector paths feed
+  the same host-side gate (`FirecrackerVmm::auto_suspend_gate`: permanent
+  mode, `Started` state, no in-flight proxied requests, post-wake
+  cooldown): (a) HTTP — the proxy records per-VM activity
+  (`vmm/activity.rs`); a background loop suspends VMs with exposed ports
+  after `idle_timeout_secs` without a proxied request; (b) non-HTTP —
+  guestd (`guestd/src/monitor.rs`) runs the VM's `idle_check_cmd` every
+  `check_interval_secs` (exit 0 = idle) and sends an `idle` event over
+  vsock (`configure_auto_suspend` request / `idle` event in
+  `guestd/src/proto.rs`); hostd pushes the config on every vsock
+  (re)connect and proactively connects after start/restore when a check
+  command is configured. Non-`permanent` VMs with `auto_suspend` are
+  rejected at create time.
 
 ## Build, run, and test commands
 
@@ -156,13 +179,16 @@ There are no Rust integration tests and no CI configuration. Testing is:
 
 1. **Unit tests** — `cargo test`; coverage exists for the pure networking
    logic (`net/state.rs` IPAM allocator, `net/cidr.rs`), the exposed-ports
-   registry (`net/types.rs`), and proxy JWT mint/verify (`proxy/token.rs`).
+   registry (`net/types.rs`), proxy JWT mint/verify (`proxy/token.rs`), the
+   auto-suspend activity tracker (`vmm/activity.rs`), `VmConfig` serde
+   defaults (`vmm/vm.rs`), and guestd's idle-check runner
+   (`guestd/src/monitor.rs`).
    Add tests in the same `#[cfg(test)] mod tests` style when touching pure
    logic.
 2. **End-to-end** — `tests/run_all.sh` requires root/KVM and a
    Firecracker binary. It runs the self-contained `tests/test_*.sh` files
    (vm_lifecycle, pause_resume, snapshot_restore, workloads, exec,
-   networking, ports, proxy),
+   networking, ports, proxy, auto_suspend),
    each of which starts hostd via `run_hostd.sh` and exercises its slice of
    the API surface with curl/jq: VM create/get/list/delete, pause/
    resume, snapshot/restore, workload run/stop/logs, per-project bridge and

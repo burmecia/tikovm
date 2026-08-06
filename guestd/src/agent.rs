@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use tracing::warn;
 
+use crate::monitor::IdleMonitor;
 use crate::proto::{Event, Request, WorkloadInfo};
 
 /// Grace period between SIGTERM and SIGKILL when stopping a workload.
@@ -33,6 +34,7 @@ struct WorkloadEntry {
 pub(crate) struct Agent {
     workloads: Mutex<HashMap<String, WorkloadEntry>>,
     conn: Mutex<Option<ConnWriter>>,
+    idle_monitor: Arc<IdleMonitor>,
 }
 
 impl Agent {
@@ -40,6 +42,7 @@ impl Agent {
         Arc::new(Self {
             workloads: Mutex::new(HashMap::new()),
             conn: Mutex::new(None),
+            idle_monitor: Arc::new(IdleMonitor::new()),
         })
     }
 
@@ -54,6 +57,12 @@ impl Agent {
             } => self.start(workload_id, cmd, env, cwd),
             Request::Stop { workload_id } => self.stop(workload_id),
             Request::List => self.list(),
+            Request::ConfigureAutoSuspend {
+                idle_check_cmd,
+                check_interval_secs,
+            } => self
+                .idle_monitor
+                .configure(self, idle_check_cmd, check_interval_secs),
         }
     }
 
@@ -68,6 +77,11 @@ impl Agent {
         if conn.as_ref().is_some_and(|c| Arc::ptr_eq(c, writer)) {
             *conn = None;
         }
+    }
+
+    /// Emit an `idle` event from the auto-suspend monitor (see monitor.rs).
+    pub(crate) fn send_idle_event(&self) {
+        self.send_event(&Event::Idle);
     }
 
     /// Serialize an event to the current host connection. Errors are

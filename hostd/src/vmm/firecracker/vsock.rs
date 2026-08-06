@@ -33,6 +33,11 @@ pub(super) enum GuestRequest {
         workload_id: String,
     },
     List,
+    /// Configure guestd's auto-suspend idle detector (empty cmd disables).
+    ConfigureAutoSuspend {
+        idle_check_cmd: Vec<String>,
+        check_interval_secs: u64,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,6 +64,8 @@ pub(super) enum GuestEvent {
     ListResult {
         workloads: Vec<GuestWorkloadInfo>,
     },
+    /// guestd's auto-suspend detector reports the guest as idle.
+    Idle,
 }
 
 #[derive(Debug, Deserialize)]

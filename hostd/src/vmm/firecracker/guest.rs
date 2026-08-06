@@ -90,9 +90,25 @@ impl FirecrackerVmm {
             handle.clone(),
             stream,
             rx,
+            self.auto_suspend_tx.clone(),
         ));
 
         handle.send(GuestRequest::List).await?;
+
+        // Arm guestd's auto-suspend idle detector if the VM has a
+        // guest-side check configured. Sent on every (re)connect, so the
+        // detector is re-armed after a restore or a dropped connection.
+        let auto_suspend = instance_ref.lock()?.vm_config.auto_suspend.clone();
+        if let Some(config) = auto_suspend
+            && !config.idle_check_cmd.is_empty()
+        {
+            handle
+                .send(GuestRequest::ConfigureAutoSuspend {
+                    idle_check_cmd: config.idle_check_cmd,
+                    check_interval_secs: config.check_interval_secs,
+                })
+                .await?;
+        }
         Ok(handle)
     }
 
@@ -105,6 +121,7 @@ impl FirecrackerVmm {
         handle: GuestConnHandle,
         stream: UnixStream,
         mut rx: mpsc::Receiver<GuestRequest>,
+        auto_suspend_tx: mpsc::Sender<VmId>,
     ) {
         let (read_half, mut write_half) = stream.into_split();
         let mut lines = BufReader::new(read_half).lines();
@@ -113,7 +130,7 @@ impl FirecrackerVmm {
                 line = lines.next_line() => {
                     match line {
                         Ok(Some(line)) => match serde_json::from_str::<GuestEvent>(&line) {
-                            Ok(event) => Self::handle_guest_event(&vm_id, &vms, &workloads_dir, event),
+                            Ok(event) => Self::handle_guest_event(&vm_id, &vms, &workloads_dir, &auto_suspend_tx, event),
                             Err(e) => warn!(vm_id = %vm_id, error = %e, "malformed event from guestd"),
                         },
                         Ok(None) => break, // guestd closed the connection
@@ -160,6 +177,7 @@ impl FirecrackerVmm {
         vm_id: &VmId,
         vms: &Arc<Mutex<HashMap<VmId, FcVmEntry>>>,
         workloads_dir: &Path,
+        auto_suspend_tx: &mpsc::Sender<VmId>,
         event: GuestEvent,
     ) {
         match event {
@@ -235,6 +253,14 @@ impl FirecrackerVmm {
                         }
                     }
                 }
+            }
+            // guestd's auto-suspend detector reports the guest as idle;
+            // hand it to the background loop, which applies the gate and
+            // snapshots. Dropping on a full channel is fine: a queued idle
+            // signal for the same VM is equivalent.
+            GuestEvent::Idle => {
+                debug!(vm_id = %vm_id, "guest reports idle");
+                let _ = auto_suspend_tx.try_send(vm_id.clone());
             }
         }
     }

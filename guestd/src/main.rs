@@ -6,6 +6,7 @@
 
 mod agent;
 mod connection;
+mod monitor;
 mod proto;
 mod vsock;
 

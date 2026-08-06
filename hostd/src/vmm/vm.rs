@@ -125,13 +125,37 @@ impl VmState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum VmMode {
     #[default]
     Ephemeral,
     Permanent,
     Schedule,
+}
+
+/// Auto-suspend policy for a `VmMode::Permanent` VM: when the VM looks idle
+/// (see the two detector paths below), hostd snapshots it and kills the
+/// Firecracker process, and a later proxy request or exec restores it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct AutoSuspendConfig {
+    /// HTTP detector path: suspend after this many seconds without a
+    /// proxied request. Also used as the post-wake cooldown before any
+    /// suspend, so a just-restored VM cannot flap straight back down.
+    pub idle_timeout_secs: u64,
+    /// Non-HTTP detector path: a program inside the guest that guestd runs
+    /// every `check_interval_secs`; exit status 0 reports "idle" (e.g. a
+    /// script checking for established Postgres connections). Empty
+    /// disables the guest-side detector.
+    #[serde(default)]
+    pub idle_check_cmd: Vec<String>,
+    /// How often guestd runs `idle_check_cmd`.
+    #[serde(default = "default_check_interval_secs")]
+    pub check_interval_secs: u64,
+}
+
+fn default_check_interval_secs() -> u64 {
+    30
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,6 +204,10 @@ pub(crate) struct VmConfig {
     pub cron_schedule: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Auto-suspend policy; only valid for `VmMode::Permanent` VMs
+    /// (enforced at create time).
+    #[serde(default)]
+    pub auto_suspend: Option<AutoSuspendConfig>,
 }
 
 impl VmConfig {
@@ -287,3 +315,44 @@ impl VmInstance {
 }
 
 pub(crate) type VmInstanceRef = Arc<Mutex<VmInstance>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_suspend_defaults() {
+        let config: AutoSuspendConfig =
+            serde_json::from_str(r#"{"idle_timeout_secs": 300}"#).unwrap();
+        assert_eq!(config.idle_timeout_secs, 300);
+        assert!(config.idle_check_cmd.is_empty());
+        assert_eq!(config.check_interval_secs, 30);
+    }
+
+    #[test]
+    fn vm_config_without_auto_suspend() {
+        let config: VmConfig = serde_json::from_str(
+            r#"{"name":"vm","project_id":1,"mode":"permanent","image":"ubuntu-24",
+                "cpus":1,"memory_mb":256,"disk_size_mb":1024,
+                "network_config":{"allow_internet":false,"exposed_ports":[]},"ssh_access":false}"#,
+        )
+        .unwrap();
+        assert!(config.auto_suspend.is_none());
+    }
+
+    #[test]
+    fn vm_config_with_auto_suspend() {
+        let config: VmConfig = serde_json::from_str(
+            r#"{"name":"vm","project_id":1,"mode":"permanent","image":"ubuntu-24",
+                "cpus":1,"memory_mb":256,"disk_size_mb":1024,
+                "network_config":{"allow_internet":false,"exposed_ports":[]},"ssh_access":false,
+                "auto_suspend":{"idle_timeout_secs":60,
+                                "idle_check_cmd":["/check"],"check_interval_secs":5}}"#,
+        )
+        .unwrap();
+        let auto_suspend = config.auto_suspend.unwrap();
+        assert_eq!(auto_suspend.idle_timeout_secs, 60);
+        assert_eq!(auto_suspend.idle_check_cmd, vec!["/check".to_string()]);
+        assert_eq!(auto_suspend.check_interval_secs, 5);
+    }
+}

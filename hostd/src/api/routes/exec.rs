@@ -45,6 +45,8 @@ pub(crate) async fn exec_command(
     ApiJson(spec): ApiJson<WorkloadSpec>,
 ) -> ApiResult<Json<ExecResponse>> {
     let vm_id = VmId(id);
+    // Wake the VM first if it is auto-suspended; a no-op when running.
+    state.vmm.ensure_started(&vm_id).await?;
     let workload = state.vmm.start_workload(&vm_id, spec).await?;
     let workload_id = workload.workload_id.clone();
 

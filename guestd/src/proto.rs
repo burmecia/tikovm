@@ -3,11 +3,13 @@
 //!   host -> guest: {"type":"start","workload_id":..,"cmd":[..],"env":{..},"cwd":..}
 //!                  {"type":"stop","workload_id":..}
 //!                  {"type":"list"}
+//!                  {"type":"configure_auto_suspend","idle_check_cmd":[..],"check_interval_secs":..}
 //!   guest -> host: {"type":"started","workload_id":..,"pid":..}
 //!                  {"type":"output","workload_id":..,"stream":"stdout|stderr","data":..}
 //!                  {"type":"exited","workload_id":..,"exit_code":..,"signal":..}
 //!                  {"type":"error","workload_id":..,"message":..}
 //!                  {"type":"list_result","workloads":[..]}
+//!                  {"type":"idle"}
 
 use std::collections::HashMap;
 
@@ -27,6 +29,13 @@ pub(crate) enum Request {
         workload_id: String,
     },
     List,
+    /// Configure the guest-side auto-suspend idle detector: run
+    /// `idle_check_cmd` every `check_interval_secs` and report `idle` when it
+    /// exits 0. An empty `idle_check_cmd` disables the detector.
+    ConfigureAutoSuspend {
+        idle_check_cmd: Vec<String>,
+        check_interval_secs: u64,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -53,6 +62,9 @@ pub(crate) enum Event {
     ListResult {
         workloads: Vec<WorkloadInfo>,
     },
+    /// The auto-suspend idle detector reported the guest as idle. hostd
+    /// decides whether to actually suspend the VM.
+    Idle,
 }
 
 #[derive(Debug, Serialize)]

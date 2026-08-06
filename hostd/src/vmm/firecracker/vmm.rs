@@ -5,17 +5,19 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde_json::json;
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::error::{Error, Result};
 use crate::net::{ExposedPort, NetworkManager, TapName};
 use crate::vmm::Vmm;
-use crate::vmm::vm::{VmConfig, VmId, VmInstance, VmInstanceRef, VmSnapshot, VmState};
+use crate::vmm::activity::ActivityTracker;
+use crate::vmm::vm::{VmConfig, VmId, VmInstance, VmInstanceRef, VmMode, VmSnapshot, VmState};
 use crate::vmm::workload::{Workload, WorkloadId, WorkloadLogEntry, WorkloadSpec};
 
 use super::api::FcApiClient;
@@ -72,6 +74,25 @@ pub(crate) struct FirecrackerVmm {
     pub(super) vms: Arc<Mutex<HashMap<VmId, FcVmEntry>>>,
     /// Next vsock guest CID to hand out (0, 1 and 2 = host are reserved).
     next_cid: AtomicU32,
+
+    /// Proxy activity per VM (auto-suspend input).
+    activity: ActivityTracker,
+
+    /// Guest `idle` events arrive here (from the vsock connection tasks) and
+    /// are drained by the auto-suspend background loop.
+    pub(super) auto_suspend_tx: mpsc::Sender<VmId>,
+    /// Receiving half, taken by `start_background_tasks`.
+    auto_suspend_rx: Mutex<Option<mpsc::Receiver<VmId>>>,
+
+    /// Per-VM locks deduplicating concurrent restores (proxy/exec wake-ups).
+    wake_locks: Mutex<HashMap<VmId, Arc<tokio::sync::Mutex<()>>>>,
+    /// When each VM last reached `Started` (start or restore); the
+    /// auto-suspend cooldown and HTTP idle timer are measured from here.
+    wake_times: Mutex<HashMap<VmId, Instant>>,
+
+    /// Weak self-reference (set by `start_background_tasks`) so lifecycle
+    /// methods can spawn tasks that need `Arc<Self>`.
+    self_ref: Mutex<Option<Weak<FirecrackerVmm>>>,
 }
 
 impl FirecrackerVmm {
@@ -82,6 +103,7 @@ impl FirecrackerVmm {
     ) -> Result<Self> {
         let fc_bin = from_path_or_env("firecracker", ENV_FIRECRACKER_BIN);
         debug!(?fc_bin, "Firecracker binary");
+        let (auto_suspend_tx, auto_suspend_rx) = mpsc::channel(64);
         Ok(Self {
             fc_bin,
             assets_dir: assets_dir.as_ref().to_path_buf(),
@@ -89,13 +111,197 @@ impl FirecrackerVmm {
             net_mgr,
             vms: Arc::new(Mutex::new(HashMap::new())),
             next_cid: AtomicU32::new(3),
+            activity: ActivityTracker::new(),
+            auto_suspend_tx,
+            auto_suspend_rx: Mutex::new(Some(auto_suspend_rx)),
+            wake_locks: Mutex::new(HashMap::new()),
+            wake_times: Mutex::new(HashMap::new()),
+            self_ref: Mutex::new(None),
         })
     }
 }
 
+/// Auto-suspend: suspend idle permanent VMs (snapshot + kill Firecracker)
+/// and let later traffic wake them via `ensure_started`.
+///
+/// Two detector paths feed `maybe_auto_suspend`:
+/// - HTTP: the proxy records per-VM activity (`activity`); a periodic loop
+///   suspends VMs whose exposed ports have been quiet for
+///   `idle_timeout_secs`.
+/// - non-HTTP: guestd runs the VM's `idle_check_cmd` and forwards `idle`
+///   events over vsock into `auto_suspend_tx`.
+///
+/// Both paths pass through the same gate, so the final decision is always
+/// hostd's.
+impl FirecrackerVmm {
+    /// Spawn the auto-suspend background loops. Must be called once after
+    /// the VMM is wrapped in an `Arc`.
+    pub(crate) fn start_background_tasks(self: &Arc<Self>) {
+        *self.self_ref.lock().unwrap() = Some(Arc::downgrade(self));
+
+        if let Some(mut rx) = self.auto_suspend_rx.lock().unwrap().take() {
+            let vmm = Arc::clone(self);
+            tokio::spawn(async move {
+                while let Some(vm_id) = rx.recv().await {
+                    vmm.maybe_auto_suspend(&vm_id).await;
+                }
+            });
+        }
+
+        let vmm = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(HTTP_IDLE_POLL);
+            loop {
+                interval.tick().await;
+                vmm.check_http_idle_vms().await;
+            }
+        });
+    }
+
+    /// HTTP idle detector: suspend VMs with exposed ports that have seen no
+    /// proxied request for `idle_timeout_secs`.
+    async fn check_http_idle_vms(&self) {
+        let vm_ids: Vec<VmId> = match self.vms.lock() {
+            Ok(vms) => vms.keys().cloned().collect(),
+            Err(_) => return,
+        };
+        for vm_id in vm_ids {
+            match self.http_idle_expired(&vm_id) {
+                Ok(true) => self.maybe_auto_suspend(&vm_id).await,
+                Ok(false) => {}
+                Err(e) => warn!(vm_id = %vm_id, error = %e, "auto-suspend idle check failed"),
+            }
+        }
+    }
+
+    /// Whether the VM's HTTP idle timer has expired: it has exposed ports
+    /// and neither a proxied request nor a wake happened within
+    /// `idle_timeout_secs`.
+    fn http_idle_expired(&self, vm_id: &VmId) -> Result<bool> {
+        let idle_timeout = {
+            let vms = self.vms.lock()?;
+            let Some(entry) = vms.get(vm_id) else {
+                return Ok(false);
+            };
+            let instance = entry.instance.lock()?;
+            let Some(config) = &instance.vm_config.auto_suspend else {
+                return Ok(false);
+            };
+            if instance.vm_config.network_config.exposed_ports.is_empty() {
+                return Ok(false); // no HTTP exposure: HTTP detector inert
+            }
+            config.idle_timeout_secs
+        };
+
+        let last_active = [
+            self.activity.last_activity(vm_id),
+            self.wake_times.lock()?.get(vm_id).copied(),
+        ]
+        .into_iter()
+        .flatten()
+        .max();
+        let Some(last_active) = last_active else {
+            return Ok(false); // never started
+        };
+        Ok(last_active.elapsed() >= Duration::from_secs(idle_timeout))
+    }
+
+    /// Proactively connect to guestd so its idle detector gets configured
+    /// (`install_guest_conn` pushes the config on connect). Needed after
+    /// start/restore: for a VM whose only detector is `idle_check_cmd`, no
+    /// workload may ever start, and without a connection the detector would
+    /// never be armed (and its `idle` events would have nowhere to go).
+    fn arm_guest_detector(&self, vm_id: &VmId) {
+        let needs_arm = {
+            let Ok(vms) = self.vms.lock() else { return };
+            let Some(entry) = vms.get(vm_id) else { return };
+            let Ok(instance) = entry.instance.lock() else {
+                return;
+            };
+            instance
+                .vm_config
+                .auto_suspend
+                .as_ref()
+                .is_some_and(|c| !c.idle_check_cmd.is_empty())
+        };
+        if !needs_arm {
+            return;
+        }
+        let vmm = self
+            .self_ref
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(Weak::upgrade);
+        let Some(vmm) = vmm else { return };
+        let vm_id = vm_id.clone();
+        tokio::spawn(async move {
+            // guest_conn retries for a minute while the guest boots.
+            if let Err(e) = vmm.guest_conn(&vm_id).await {
+                warn!(vm_id = %vm_id, error = %e, "failed to arm guest idle detector");
+            }
+        });
+    }
+
+    /// Suspend `vm_id` if the gate allows it. Triggered by guest `idle`
+    /// events and by the HTTP idle loop; quietly does nothing otherwise.
+    async fn maybe_auto_suspend(&self, vm_id: &VmId) {
+        match self.auto_suspend_gate(vm_id) {
+            Ok(true) => {
+                info!(vm_id = %vm_id, "auto-suspending idle VM");
+                if let Err(e) = self.snapshot_vm(vm_id).await {
+                    warn!(vm_id = %vm_id, error = %e, "auto-suspend snapshot failed");
+                }
+            }
+            Ok(false) => debug!(vm_id = %vm_id, "auto-suspend gated"),
+            Err(e) => warn!(vm_id = %vm_id, error = %e, "auto-suspend gate failed"),
+        }
+    }
+
+    /// The gate every auto-suspend trigger passes through: the VM must be a
+    /// started permanent VM with an auto_suspend config, have no in-flight
+    /// proxied requests, and be past the post-wake cooldown (so a restored
+    /// VM cannot flap straight back down).
+    fn auto_suspend_gate(&self, vm_id: &VmId) -> Result<bool> {
+        let idle_timeout = {
+            let vms = self.vms.lock()?;
+            let Some(entry) = vms.get(vm_id) else {
+                return Ok(false);
+            };
+            let instance = entry.instance.lock()?;
+            if instance.state != VmState::Started || instance.vm_config.mode != VmMode::Permanent {
+                return Ok(false);
+            }
+            match &instance.vm_config.auto_suspend {
+                Some(config) => config.idle_timeout_secs,
+                None => return Ok(false),
+            }
+        };
+
+        if self.activity.in_flight(vm_id) > 0 {
+            return Ok(false);
+        }
+        if let Some(woken) = self.wake_times.lock()?.get(vm_id)
+            && woken.elapsed() < Duration::from_secs(idle_timeout)
+        {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+}
+
+/// How often the HTTP idle detector scans VMs.
+const HTTP_IDLE_POLL: Duration = Duration::from_secs(10);
+
 #[async_trait]
 impl Vmm for FirecrackerVmm {
     async fn create_vm(&self, config: &VmConfig) -> Result<VmId> {
+        if config.auto_suspend.is_some() && config.mode != VmMode::Permanent {
+            return Err(Error::vmm(
+                "auto_suspend is only supported for permanent VMs",
+            ));
+        }
+
         let mut instance = VmInstance::new(config, &self.assets_dir, &self.work_dir)?;
         let vm_id = instance.vm_id.clone();
         fs::create_dir_all(&instance.work_dir)?;
@@ -184,6 +390,8 @@ impl Vmm for FirecrackerVmm {
                 match client.wait_until_running(Duration::from_secs(5)).await {
                     Ok(_) => {
                         instance_ref.lock()?.state.transition(VmState::Started)?;
+                        self.wake_times.lock()?.insert(vm_id.clone(), Instant::now());
+                        self.arm_guest_detector(vm_id);
                     }
                     Err(e) => {
                         instance_ref.lock()?.state.transition(VmState::Created)?;
@@ -363,6 +571,8 @@ impl Vmm for FirecrackerVmm {
                     .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?
                     .fc = Some(child);
                 instance_ref.lock()?.state.transition(VmState::Started)?;
+                self.wake_times.lock()?.insert(vm_id.clone(), Instant::now());
+                self.arm_guest_detector(vm_id);
                 info!(vm_id = %vm_id, "VM restored from snapshot");
                 Ok(())
             }
@@ -584,8 +794,65 @@ impl Vmm for FirecrackerVmm {
         // Clean up runtime artifacts.
         entry.instance.lock()?.cleanup_runtime_artifacts()?;
 
+        // Drop the auto-suspend bookkeeping for this VM.
+        self.wake_times.lock()?.remove(vm_id);
+        self.wake_locks.lock()?.remove(vm_id);
+        self.activity.clear(vm_id);
+
         info!(vm_id = %vm_id, "VM destroyed");
 
         Ok(())
+    }
+
+    async fn ensure_started(&self, vm_id: &VmId) -> Result<()> {
+        // Per-VM lock: concurrent wake-ups (proxy requests, exec) share one
+        // restore, and a second caller arriving mid-restore just waits for
+        // the first to finish and finds the VM Started.
+        let wake_lock = {
+            let mut locks = self.wake_locks.lock()?;
+            locks
+                .entry(vm_id.clone())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        let _guard = wake_lock.lock().await;
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let state = {
+                let vms = self.vms.lock()?;
+                let entry = vms
+                    .get(vm_id)
+                    .ok_or_else(|| Error::VmNotFound(vm_id.to_string()))?;
+                entry.instance.lock()?.state
+            };
+            match state {
+                VmState::Started => return Ok(()),
+                VmState::Suspended => {
+                    info!(vm_id = %vm_id, "waking suspended VM");
+                    // restore_vm records the wake time on success.
+                    return self.restore_vm(vm_id).await;
+                }
+                // A snapshot or restore triggered outside this path (the
+                // management API) is in flight; wait for it to settle.
+                VmState::Suspending | VmState::Restoring => {
+                    if Instant::now() >= deadline {
+                        return Err(Error::vmm(format!(
+                            "vm {vm_id} is still {state:?} after 30s"
+                        )));
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                _ => {
+                    return Err(Error::vmm(format!(
+                        "vm {vm_id} is {state:?}; only a suspended vm can be woken"
+                    )));
+                }
+            }
+        }
+    }
+
+    fn activity(&self) -> ActivityTracker {
+        self.activity.clone()
     }
 }

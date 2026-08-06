@@ -18,6 +18,7 @@ TESTS=(
 	test_networking.sh
 	test_ports.sh
 	test_proxy.sh
+	test_auto_suspend.sh
 )
 
 for t in "${TESTS[@]}"; do

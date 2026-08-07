@@ -22,7 +22,7 @@ use crate::{
     },
     error::Error,
     net::ExposedPort,
-    proxy::DEFAULT_TTL_SECS,
+    proxy::{DEFAULT_TTL_SECS, Proto},
     vmm::vm::VmId,
 };
 
@@ -67,6 +67,10 @@ pub(crate) struct MintTokenRequest {
     /// [`DEFAULT_TTL_SECS`] and is clamped to the proxy's maximum.
     #[serde(default)]
     ttl_secs: Option<u64>,
+    /// Forwarding mode the token is valid for: `http` (default) or `tcp`
+    /// (e.g. the Postgres wire protocol, see `proxy/tcp.rs`).
+    #[serde(default)]
+    proto: Option<Proto>,
 }
 
 #[derive(Debug, Serialize)]
@@ -95,6 +99,7 @@ pub(crate) async fn mint_port_token(
     let (token, expires_at) = state.tokens.mint(
         &vm_id,
         port,
+        body.proto.unwrap_or(Proto::Http),
         body.ttl_secs.unwrap_or(DEFAULT_TTL_SECS),
     )?;
     Ok((

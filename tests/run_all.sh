@@ -18,6 +18,7 @@ TESTS=(
 	test_networking.sh
 	test_ports.sh
 	test_proxy.sh
+	test_proxy_tcp.sh
 	test_auto_suspend.sh
 )
 

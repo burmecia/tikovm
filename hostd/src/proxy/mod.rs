@@ -1,26 +1,35 @@
 //! JWT-authenticated reverse proxy for the exposed ports of VMs.
 //!
 //! This is the data-plane counterpart of the management API: it listens on
-//! its own address (`--proxy-listen`) and forwards requests to
-//! `http://<guest_ip>:<port>`, where the target VM and port come from a
-//! per-request bearer JWT minted by the management API
-//! (`POST /api/vms/{id}/ports/{port}/token`). See `http.rs` for the request
-//! path and `token.rs` for the token model.
+//! its own address (`--proxy-listen`) and forwards connections to
+//! `<guest_ip>:<port>`, where the target VM and port come from an ephemeral
+//! JWT minted by the management API
+//! (`POST /api/vms/{id}/ports/{port}/token`). Both modes re-validate the
+//! target against live state on every connection (see `target.rs`), so
+//! unexposing a port or destroying the VM revokes access immediately.
 //!
-//! Only HTTP is forwarded today, but the raw `TcpListener` accept loop in
-//! `server.rs` is the deliberate seam for raw-TCP proxying (e.g. Postgres): a
-//! TCP mode reads the protocol's own handshake — for Postgres the
-//! length-prefixed StartupMessage (first 4 bytes = frame length, so exactly
-//! one frame is read) — extracts the JWT from an agreed startup parameter,
-//! validates it once (`proto: "tcp"` claims), strips/rewrites the token field
-//! (a stock Postgres would reject an unknown startup parameter), forwards the
-//! handshake to the guest, and then splices both directions with
-//! `tokio::io::copy_bidirectional`. Nothing beyond the first packet needs
-//! parsing, and the HTTP path is untouched.
+//! Two forwarding modes share the one listener; `server.rs` peeks at the
+//! first bytes of each accepted connection to pick one:
+//!
+//! - HTTP (`http.rs`): the JWT rides in the `Authorization: Bearer` header
+//!   (`proto: "http"` claims) and the request is forwarded to
+//!   `http://<guest_ip>:<port>`.
+//! - TCP (`tcp.rs`), for the Postgres wire protocol: the JWT rides in the
+//!   `tikovm_token` parameter of the length-prefixed StartupMessage
+//!   (`proto: "tcp"` claims — stock libpq can set it via the `options`
+//!   connection parameter, e.g. `options='-c tikovm_token=<jwt>'`). Only the
+//!   startup phase is touched: SSL/GSS encryption requests get an `N`
+//!   (plaintext only; TLS termination is out of scope), the token parameter
+//!   is stripped (a stock Postgres would reject the unknown parameter), the
+//!   rewritten StartupMessage is forwarded, and both directions are then
+//!   spliced with `tokio::io::copy_bidirectional`. Failures are reported as a
+//!   Postgres ErrorResponse so psql shows a clean server error.
 
 mod http;
 mod server;
+mod target;
+mod tcp;
 mod token;
 
 pub(crate) use server::ProxyServer;
-pub(crate) use token::{DEFAULT_TTL_SECS, ProxyTokens};
+pub(crate) use token::{DEFAULT_TTL_SECS, Proto, ProxyTokens};

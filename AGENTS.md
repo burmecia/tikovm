@@ -39,11 +39,14 @@ hostd/
                       error.rs (uniform JSON errors),
                       routes/{health,vm,network,ports,workload}.rs
   src/proxy/          JWT-authenticated reverse proxy for exposed ports:
-                      server.rs (raw TcpListener accept loop serving HTTP/1.1
-                      via hyper — the seam for future raw-TCP proxying),
+                      server.rs (raw TcpListener accept loop; peeks the first
+                      bytes to dispatch HTTP/1.1 via hyper vs. raw TCP),
                       token.rs (HS256 JWT mint/verify against a per-boot
-                      random secret),
-                      http.rs (auth + live-state revalidation + forwarding)
+                      random secret), target.rs (live-state revalidation
+                      shared by both modes),
+                      http.rs (auth + forwarding for HTTP),
+                      tcp.rs (Postgres wire protocol: startup-phase JWT in
+                      the tikovm_token parameter, then byte splice)
   src/net/            host networking: cidr.rs (IPv4 CIDR math), state.rs (pure
                       IPAM allocator, unit-tested), host.rs (`ip`/`iptables`
                       shell-outs), manager.rs (NetworkManager: ties state to
@@ -73,7 +76,7 @@ scripts/              project-wide bash: run_hostd.sh,
 tests/                end-to-end tests: common.sh (shared helpers), run_all.sh
                       (full suite), test_{vm_lifecycle,workloads,exec,
                       pause_resume,snapshot_restore,networking,ports,proxy,
-                      auto_suspend}.sh
+                      proxy_tcp,auto_suspend}.sh
                       (each self-contained)
 assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext4,
                       initramfs.cpio.gz (some are build artifacts; .gitkeep'd)
@@ -126,16 +129,24 @@ assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext
   body `{"error": {"code": <http status>, "message": ...}}` (see
   `hostd/src/api/error.rs`).
 - Proxy: a second server on `--proxy-listen` (default `0.0.0.0:8080`)
-  reverse-proxies HTTP requests to `http://<guest_ip>:<port>`. Each request
-  carries `Authorization: Bearer <jwt>`; the JWT (HS256, per-boot random
+  forwards to `<guest_ip>:<port>`; the raw accept loop peeks the first bytes
+  of each connection to pick one of two modes. HTTP requests are
+  reverse-proxied to `http://<guest_ip>:<port>` and carry
+  `Authorization: Bearer <jwt>`; Postgres wire-protocol connections (sniffed
+  via the length-prefixed StartupMessage) carry the JWT in the
+  `tikovm_token` startup parameter (e.g.
+  `psql "host=<proxy> port=8080 user=postgres dbname=postgres options='-c tikovm_token=<jwt>'"`),
+  which the proxy verifies, strips, and then splices bytes both ways —
+  SSL/GSS encryption requests get `N` (plaintext only) and failures come
+  back as a Postgres ErrorResponse. Mint a TCP token with
+  `POST /api/vms/{id}/ports/{port}/token {"proto":"tcp"}` (default is
+  `http`). The JWT (HS256, per-boot random
   secret — restart invalidates all tokens) names the target VM + port. The
-  proxy re-validates against live state on every request (VM exists, port
+  proxy re-validates against live state on every connection (VM exists, port
   still in `exposed_ports`; a `Suspended` VM is restored first — see
-  auto-suspend below), so unexposing a port revokes access immediately. Errors use the same uniform JSON body as the API. The
-  raw accept loop is the seam for future raw-TCP proxying (e.g. Postgres:
-  read the length-prefixed StartupMessage, extract the JWT from a startup
-  parameter, strip it, splice bytes); WebSocket upgrades and TLS termination
-  are out of scope.
+  auto-suspend below), so unexposing a port revokes access immediately. HTTP
+  errors use the same uniform JSON body as the API. WebSocket upgrades and
+  TLS termination are out of scope.
 - Auto-suspend: a `permanent` VM created with an `auto_suspend`
   (`VmConfig.auto_suspend` = `{idle_timeout_secs, idle_check_cmd,
   check_interval_secs}`) is snapshotted (via `snapshot_vm`, so the
@@ -191,7 +202,7 @@ There are no Rust integration tests and no CI configuration. Testing is:
 2. **End-to-end** — `tests/run_all.sh` requires root/KVM and a
    Firecracker binary. It runs the self-contained `tests/test_*.sh` files
    (vm_lifecycle, pause_resume, snapshot_restore, workloads, exec,
-   networking, ports, proxy, auto_suspend),
+   networking, ports, proxy, proxy_tcp, auto_suspend),
    each of which starts hostd via `run_hostd.sh` and exercises its slice of
    the API surface with curl/jq: VM create/get/list/delete, pause/
    resume, snapshot/restore, workload run/stop/logs, per-project bridge and

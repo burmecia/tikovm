@@ -7,9 +7,9 @@
 //! persisted, so a daemon restart invalidates every outstanding token — the
 //! same ephemeral model as the VMs themselves.
 //!
-//! The `proto` claim distinguishes the forwarding mode. Only `http` exists
-//! today; a `tcp` variant (e.g. Postgres wire protocol) will carry tokens in
-//! the protocol's own handshake instead of an HTTP header.
+//! The `proto` claim distinguishes the forwarding mode: `http` tokens arrive
+//! in the `Authorization` header, `tcp` tokens (e.g. Postgres wire protocol)
+//! in the protocol's own handshake (see `proxy/tcp.rs`).
 
 use chrono::{DateTime, Duration, Utc};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
@@ -24,12 +24,14 @@ pub(crate) const DEFAULT_TTL_SECS: u64 = 15 * 60;
 /// Longest lifetime a mint request may ask for.
 pub(crate) const MAX_TTL_SECS: u64 = 24 * 60 * 60;
 
-/// Forwarding mode a token is valid for. Only `http` is implemented; `tcp` is
-/// reserved for the planned raw-TCP proxying (see the `proxy` module docs).
+/// Forwarding mode a token is valid for. `http` tokens authenticate via the
+/// `Authorization` header; `tcp` tokens (e.g. Postgres wire protocol) arrive
+/// in the protocol's own handshake (see `proxy/tcp.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Proto {
     Http,
+    Tcp,
 }
 
 /// JWT claims identifying the forwarding target of one proxy request.
@@ -54,12 +56,14 @@ impl ProxyTokens {
         }
     }
 
-    /// Mint a token for `vm_id` + `port`, valid for `ttl_secs` (clamped to
-    /// 1..=MAX_TTL_SECS). Returns the token and its expiry time.
+    /// Mint a token for `vm_id` + `port` + forwarding `proto`, valid for
+    /// `ttl_secs` (clamped to 1..=MAX_TTL_SECS). Returns the token and its
+    /// expiry time.
     pub(crate) fn mint(
         &self,
         vm_id: &VmId,
         port: u16,
+        proto: Proto,
         ttl_secs: u64,
     ) -> Result<(String, DateTime<Utc>)> {
         let ttl = ttl_secs.clamp(1, MAX_TTL_SECS) as i64;
@@ -68,7 +72,7 @@ impl ProxyTokens {
         let claims = Claims {
             vm_id: vm_id.to_string(),
             port,
-            proto: Proto::Http,
+            proto,
             iat: now.timestamp() as u64,
             exp: expires_at.timestamp() as u64,
         };
@@ -113,7 +117,7 @@ mod tests {
     #[test]
     fn mint_verify_roundtrip() {
         let tokens = ProxyTokens::new();
-        let (token, expires_at) = tokens.mint(&vm_id(), 8080, 60).unwrap();
+        let (token, expires_at) = tokens.mint(&vm_id(), 8080, Proto::Http, 60).unwrap();
         let claims = tokens.verify(&token).unwrap();
         assert_eq!(claims.vm_id, "vm-1-test");
         assert_eq!(claims.port, 8080);
@@ -123,9 +127,20 @@ mod tests {
     }
 
     #[test]
+    fn mint_verify_tcp_roundtrip() {
+        let tokens = ProxyTokens::new();
+        let (token, _) = tokens.mint(&vm_id(), 5432, Proto::Tcp, 60).unwrap();
+        let claims = tokens.verify(&token).unwrap();
+        assert_eq!(claims.port, 5432);
+        assert_eq!(claims.proto, Proto::Tcp);
+    }
+
+    #[test]
     fn ttl_is_clamped() {
         let tokens = ProxyTokens::new();
-        let (_, expires_at) = tokens.mint(&vm_id(), 8080, MAX_TTL_SECS * 10).unwrap();
+        let (_, expires_at) = tokens
+            .mint(&vm_id(), 8080, Proto::Http, MAX_TTL_SECS * 10)
+            .unwrap();
         let max_exp = Utc::now() + Duration::seconds(MAX_TTL_SECS as i64 + 5);
         assert!(expires_at <= max_exp);
     }
@@ -134,7 +149,7 @@ mod tests {
     fn verify_rejects_wrong_secret() {
         let issuer = ProxyTokens::new();
         let other = ProxyTokens::new();
-        let (token, _) = issuer.mint(&vm_id(), 8080, 60).unwrap();
+        let (token, _) = issuer.mint(&vm_id(), 8080, Proto::Http, 60).unwrap();
         assert!(matches!(
             other.verify(&token),
             Err(Error::ProxyToken(_))

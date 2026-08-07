@@ -16,6 +16,9 @@
 # hostd/src/vmm/firecracker/setup.rs). Without that seeded rule only
 # localhost can connect. The postgres role gets a default password of
 # "postgres" (these images are test-only, like the root:root SSH login).
+# It also ships /usr/local/bin/tikovm-pg-idle-check, the auto-suspend idle
+# check hostd defaults to for postgres-16 VMs (see create_vm in
+# hostd/src/vmm/firecracker/vmm.rs).
 #
 # Uses the https apt mirror because this host's egress blocks plain http/80.
 
@@ -44,6 +47,25 @@ extra_setup() {
 # tikovm: per-VM rules seeded by hostd into the overlay upper layer.
 include_dir /etc/postgresql/16/main/pg_hba.d
 HBA
+
+	# The auto-suspend idle check guestd runs when the VM's
+	# auto_suspend.idle_check_cmd names it (hostd fills this in by default
+	# for postgres-16 VMs with an auto_suspend config).
+	sudo tee "${rootfs}/usr/local/bin/tikovm-pg-idle-check" > /dev/null << 'EOF'
+#!/bin/bash
+# tikovm auto-suspend idle check for PostgreSQL: exit 0 ("idle") when the
+# cluster has no client connections and no running activity; anything else
+# (connections, active queries, an error) exits non-zero. See
+# guestd/src/monitor.rs for how the result is used.
+#
+# Runs over the local socket with peer auth as the postgres OS user. The
+# check's own psql session shows up in pg_stat_activity as a client
+# backend, so it must exclude its own pid. A psql failure (e.g. the server
+# is still starting) counts as "not idle" — the safe direction.
+count="$(su postgres -c "psql -Atqc \"select count(*) from pg_stat_activity where pid <> pg_backend_pid() and (backend_type = 'client backend' or state = 'active')\"")" || exit 1
+[ "${count}" = "0" ]
+EOF
+	sudo chmod 0755 "${rootfs}/usr/local/bin/tikovm-pg-idle-check"
 
 	# Set the default password for the postgres role. No server runs at
 	# image build time, so start the cluster socket-only (listen_addresses='')

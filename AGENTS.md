@@ -76,7 +76,7 @@ scripts/              project-wide bash: run_hostd.sh,
 tests/                end-to-end tests: common.sh (shared helpers), run_all.sh
                       (full suite), test_{vm_lifecycle,workloads,exec,
                       pause_resume,snapshot_restore,networking,ports,proxy,
-                      proxy_tcp,auto_suspend}.sh
+                      proxy_tcp,postgres_auto_suspend,auto_suspend}.sh
                       (each self-contained)
 assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext4,
                       initramfs.cpio.gz (some are build artifacts; .gitkeep'd)
@@ -163,8 +163,12 @@ assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext
   vsock (`configure_auto_suspend` request / `idle` event in
   `guestd/src/proto.rs`); hostd pushes the config on every vsock
   (re)connect and proactively connects after start/restore when a check
-  command is configured. Non-`permanent` VMs with `auto_suspend` are
-  rejected at create time.
+  command is configured. The postgres-16 image ships a SQL-based check
+  (`/usr/local/bin/tikovm-pg-idle-check`: idle = no client connections and
+  no active queries in `pg_stat_activity`); hostd defaults
+  `idle_check_cmd` to it for postgres-16 VMs that set `auto_suspend`
+  without an explicit command. Non-`permanent` VMs with `auto_suspend`
+  are rejected at create time.
 
 ## Build, run, and test commands
 
@@ -202,7 +206,8 @@ There are no Rust integration tests and no CI configuration. Testing is:
 2. **End-to-end** — `tests/run_all.sh` requires root/KVM and a
    Firecracker binary. It runs the self-contained `tests/test_*.sh` files
    (vm_lifecycle, pause_resume, snapshot_restore, workloads, exec,
-   networking, ports, proxy, proxy_tcp, auto_suspend),
+   networking, ports, proxy, proxy_tcp, postgres_auto_suspend,
+   auto_suspend),
    each of which starts hostd via `run_hostd.sh` and exercises its slice of
    the API surface with curl/jq: VM create/get/list/delete, pause/
    resume, snapshot/restore, workload run/stop/logs, per-project bridge and
@@ -249,7 +254,9 @@ blindly:
   `vmm/firecracker/setup.rs`) drops one rule scoped to the VM's project
   subnet into that directory at VM creation time, so the host and sibling
   VMs in the same project can connect (default `postgres`/`postgres`
-  role password, test-only) and nothing else can.
+  role password, test-only) and nothing else can. The image also ships
+  `/usr/local/bin/tikovm-pg-idle-check`, the SQL-based auto-suspend idle
+  check hostd defaults `idle_check_cmd` to for postgres-16 VMs.
 - `build_initramfs.sh` — packs busybox + `initramfs_init.sh` into
   `initramfs.cpio.gz` (newc cpio, gzipped). `initramfs.cpio.gz` is
   git-ignored as a build artifact.

@@ -19,6 +19,7 @@ TESTS=(
 	test_ports.sh
 	test_proxy.sh
 	test_proxy_tcp.sh
+	test_postgres_auto_suspend.sh
 	test_auto_suspend.sh
 )
 

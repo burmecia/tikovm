@@ -133,6 +133,7 @@ impl NetworkManager {
                 subnet: self
                     .supernet
                     .subnet(project.subnet_index, self.subnet_prefix),
+                supernet: self.supernet,
             };
             if let Err(e) = host::delete_bridge(&setup) {
                 warn!(bridge = %setup.bridge, error = %e, "reconcile: failed to delete bridge");

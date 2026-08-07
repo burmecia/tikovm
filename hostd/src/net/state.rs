@@ -44,6 +44,10 @@ pub(super) struct ProjectSetup {
     pub(super) bridge: String,
     pub(super) gateway: Ipv4Addr,
     pub(super) subnet: Ipv4Net,
+    /// The supernet the subnet was carved from; the egress MASQUERADE must
+    /// exclude it so intra-supernet (cross-project) traffic keeps its real
+    /// source IP instead of being rewritten to the host's bridge IP.
+    pub(super) supernet: Ipv4Net,
 }
 
 /// What `release` must tear down on the host.
@@ -124,6 +128,7 @@ impl NetState {
                 bridge: bridge.clone(),
                 gateway,
                 subnet,
+                supernet: *supernet,
             }),
             bridge,
             vm_net: VmNet::new(tap_name.clone(), guest_ip, gateway, subnet.to_string()),
@@ -163,6 +168,7 @@ impl NetState {
                 bridge: project.bridge,
                 gateway: project.gateway,
                 subnet: supernet.subnet(project.subnet_index, subnet_prefix),
+                supernet: *supernet,
             })
         } else {
             None

@@ -8,8 +8,8 @@
 # systemd rootfs with the release-built guestd installed as a systemd
 # service. The image is the shared read-only lower layer of the overlayfs
 # root the initramfs assembles per VM (see scripts/initramfs_init.sh), so it
-# must NOT hardcode a network address: hostd seeds per-VM static network
-# config into the overlay upper layer at VM creation time.
+# must NOT hardcode a network address: each guest's eth0 address comes from
+# the kernel `ip=` boot argument hostd passes at VM creation time.
 
 set -euo pipefail
 
@@ -107,9 +107,9 @@ WantedBy=multi-user.target
 UNIT
 systemctl enable guestd
 
-# Networking: hostd seeds a per-VM static config (Address/Gateway/DNS) into
-# the overlay disk's upper layer at VM creation time; it shadows this file
-# via overlayfs, so keep this free of any hardcoded address.
+# Networking: eth0's address comes from the kernel `ip=` boot argument
+# hostd passes (CONFIG_IP_PNP configures eth0 before init runs), so keep
+# this file free of any hardcoded address; only DNS lives here.
 mkdir -p /etc/systemd/network
 cat > /etc/systemd/network/20-eth0.network << 'NETWORK'
 [Match]

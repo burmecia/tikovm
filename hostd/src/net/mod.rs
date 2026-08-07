@@ -4,7 +4,9 @@
 //! default) subnet lazily carved out of a supernet. The host side of the
 //! bridge is the gateway (.1); each VM gets a TAP device enslaved to the
 //! bridge and a guest IP from .2 up. Same-project VMs reach each other at L2
-//! through the bridge; internet egress is a per-subnet MASQUERADE rule.
+//! through the bridge; internet egress is a per-subnet MASQUERADE rule that
+//! excludes supernet destinations, so cross-project traffic is routed with
+//! its real source IP (per-project access rules in guests can rely on it).
 //!
 //! Allocation follows the VM lifecycle: the bridge/subnet/NAT rule are
 //! created when a project's first VM is allocated and torn down when its last

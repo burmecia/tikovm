@@ -54,7 +54,8 @@ hostd/
                       workload.rs, firecracker/ (the only Vmm implementation):
                       vmm.rs (FirecrackerVmm + auto-suspend gate/loops),
                       setup.rs (spawn + pre-boot API
-                      config), api.rs (Firecracker API socket client),
+                      config + overlay-disk seeding), api.rs (Firecracker API
+                      socket client),
                       vsock.rs (channel to guestd), guest.rs
 guestd/
   src/main.rs         vsock accept loop, one thread per host connection
@@ -96,7 +97,9 @@ assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext
   with a subnet carved from `--net-supernet` (default `172.16.0.0/12`) at
   `--net-subnet-prefix` (default /24). VMs in one project share the subnet;
   the host bridge IP `.1` is the gateway; egress is per-subnet iptables
-  MASQUERADE. Bridge/subnet is created with the project's first VM and torn
+  MASQUERADE that excludes supernet destinations, so cross-project traffic
+  is routed with its real source IP. Bridge/subnet is created with the
+  project's first VM and torn
   down with its last; allocation state persists to
   `<work_dir>/network_state.json` and is reconciled on startup. The guest IP
   is passed as a kernel `ip=` boot argument (`CONFIG_IP_PNP=y`), so eth0 is
@@ -211,8 +214,9 @@ blindly:
   service, image verification + e2fsck), sourced by the per-image entry
   scripts as `build_rootfs <image> <extra_packages> <apt_mirror>
   [verify_cmd...]`. Note the rootfs must not hardcode a network address:
-  hostd seeds per-VM static network config into the overlay upper layer at
-  VM creation time.
+  the guest IP comes from the kernel `ip=` boot argument hostd passes (the
+  only per-VM file hostd seeds into the overlay upper layer is the
+  PostgreSQL pg_hba rule — see build_rootfs_postgres16.sh).
 - `rootfs/build_rootfs_ubuntu24.sh` — builds `ubuntu-24.04-rootfs.ext4`
   (base image).
 - `rootfs/build_rootfs_python312.sh` — same base plus `python3` (3.12 on
@@ -224,6 +228,17 @@ blindly:
   the official nodejs.org tarball unpacked into `/usr/local` via the
   `extra_setup` hook (noble's `nodejs` package is only Node 18), producing
   `node-22-rootfs.ext4`.
+- `rootfs/build_rootfs_postgres16.sh` — same base plus PostgreSQL 16
+  (noble's stock `postgresql` package), producing
+  `postgres-16-rootfs.ext4`. The package's postinst creates the default
+  `16/main` cluster and enables the service; per-VM data lands in the
+  overlay upper layer. The image makes the cluster listen on all
+  interfaces and end its pg_hba.conf with an `include_dir` of
+  `pg_hba.d/`; hostd (`seed_overlay_disk` in
+  `vmm/firecracker/setup.rs`) drops one rule scoped to the VM's project
+  subnet into that directory at VM creation time, so the host and sibling
+  VMs in the same project can connect (default `postgres`/`postgres`
+  role password, test-only) and nothing else can.
 - `build_initramfs.sh` — packs busybox + `initramfs_init.sh` into
   `initramfs.cpio.gz` (newc cpio, gzipped). `initramfs.cpio.gz` is
   git-ignored as a build artifact.

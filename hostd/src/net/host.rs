@@ -69,7 +69,26 @@ pub(super) fn ensure_bridge(setup: &ProjectSetup) -> Result<()> {
     run_cmd("ip", &["link", "set", &setup.bridge, "up"])?;
     ensure_ip_forward()?;
     // Egress NAT for the whole project subnet, plus explicit FORWARD accepts
-    // (FORWARD policy is DROP on e.g. Docker-enabled hosts).
+    // (FORWARD policy is DROP on e.g. Docker-enabled hosts). The MASQUERADE
+    // excludes the supernet: intra-supernet (cross-project) traffic must
+    // keep its real source IP — both so per-project access rules in guests
+    // (e.g. a seeded PostgreSQL pg_hba subnet rule) see the true origin, and
+    // so one project's VMs can't impersonate the host's bridge IP on another
+    // project's subnet.
+    //
+    // Remove any legacy unrestricted rule first: hostd versions before the
+    // supernet exclusion installed `-s <subnet> -j MASQUERADE`, which would
+    // otherwise shadow the narrowed rule (and leak at teardown).
+    iptables_remove(&[
+        "-t",
+        "nat",
+        "-D",
+        "POSTROUTING",
+        "-s",
+        &setup.subnet.to_string(),
+        "-j",
+        "MASQUERADE",
+    ]);
     iptables_ensure(&[
         "-t",
         "nat",
@@ -77,6 +96,9 @@ pub(super) fn ensure_bridge(setup: &ProjectSetup) -> Result<()> {
         "POSTROUTING",
         "-s",
         &setup.subnet.to_string(),
+        "!",
+        "-d",
+        &setup.supernet.to_string(),
         "-j",
         "MASQUERADE",
     ])?;
@@ -104,6 +126,21 @@ pub(super) fn ensure_bridge(setup: &ProjectSetup) -> Result<()> {
 }
 
 pub(super) fn delete_bridge(setup: &ProjectSetup) -> Result<()> {
+    iptables_remove(&[
+        "-t",
+        "nat",
+        "-D",
+        "POSTROUTING",
+        "-s",
+        &setup.subnet.to_string(),
+        "!",
+        "-d",
+        &setup.supernet.to_string(),
+        "-j",
+        "MASQUERADE",
+    ]);
+    // Also try the pre-supernet-exclusion form, in case a bridge created by
+    // an older hostd is being torn down.
     iptables_remove(&[
         "-t",
         "nat",

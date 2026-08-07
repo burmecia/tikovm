@@ -7,9 +7,9 @@
 #
 # The overlay makes the entire base filesystem appear writable: every write
 # transparently lands on /dev/vdb, so the base image (/dev/vda) stays pristine
-# and is shared unchanged across all VMs. The per-VM identity/network files
-# live in /dev/vdb's `upper/` tree (seeded at image-creation time) and shadow
-# the base's versions via overlayfs.
+# and is shared unchanged across all VMs. hostd may also seed per-VM files
+# into /dev/vdb's `upper/` tree before boot (e.g. the PostgreSQL pg_hba
+# rule); they shadow the base's versions via overlayfs.
 #
 # After the overlay is mounted at /sysroot we move the kernel VFSes into it
 # and switch_root into systemd. From the guest's perspective it boots from a
@@ -51,7 +51,7 @@ mount -t ext4 -o ro /dev/vda /lower || { echo "tikovm-init: mount /dev/vda ro fa
 # RW per-VM image = backing store for overlayfs upper + work.
 mount -t ext4 /dev/vdb /upper-disk || { echo "tikovm-init: mount /dev/vdb rw failed"; rescue_shell; }
 
-# upper/ holds file-level changes (created/seeded at image build, or grown at
+# upper/ holds file-level changes (seeded by hostd before boot, or grown at
 # runtime); work/ is overlayfs scratch (must exist, must be empty on first use).
 mkdir -p /upper-disk/upper /upper-disk/work
 

@@ -12,7 +12,7 @@ use tokio::process;
 use tracing::{debug, info};
 
 use crate::error::{Error, Result};
-use crate::vmm::vm::VmInstanceRef;
+use crate::vmm::vm::{VmInstance, VmInstanceRef};
 
 use super::api::FcApiClient;
 use super::vmm::FirecrackerVmm;
@@ -127,6 +127,9 @@ impl FirecrackerVmm {
         // and uses it as the overlayfs upper/work backing store, so it only
         // needs a fresh empty ext4 filesystem sized per the VM config.
         create_overlay_disk(&instance.overlay_disk, vm_config.disk_size_mb).await?;
+        // Seed per-VM guest config (e.g. PostgreSQL pg_hba rules) into the
+        // disk's upper layer before the drive is attached.
+        seed_overlay_disk(&instance).await?;
         client
             .put(
                 "/drives/overlay",
@@ -208,6 +211,84 @@ async fn create_overlay_disk(path: &Path, size_mb: u32) -> Result<()> {
             "mkfs.ext4 {} failed: {status}",
             path.display()
         )));
+    }
+    Ok(())
+}
+
+/// Seed per-VM guest configuration into the overlay disk's upper layer.
+///
+/// The overlay disk is a fresh ext4 whose `upper/` tree shadows the shared
+/// read-only base image via overlayfs (see scripts/initramfs_init.sh), so
+/// files written here before the first boot are how hostd injects per-VM
+/// config the base image cannot hardcode. The disk is loop-mounted, seeded,
+/// and unmounted again before Firecracker attaches it.
+///
+/// Today this only handles PostgreSQL images: a pg_hba rule scoped to the
+/// VM's project subnet, so the cluster (the base image makes it listen on
+/// all interfaces) accepts password connections from the host's bridge IP
+/// and sibling VMs in the same project — and from nowhere else. The base
+/// image's pg_hba.conf pulls the rule in via
+/// `include_dir '/etc/postgresql/16/main/pg_hba.d'` (needs PostgreSQL 16).
+async fn seed_overlay_disk(instance: &VmInstance) -> Result<()> {
+    if instance.vm_config.image != "postgres-16" {
+        return Ok(());
+    }
+    let net = instance
+        .net
+        .as_ref()
+        .ok_or_else(|| Error::vmm(format!("vm {} has no network allocation", instance.vm_id)))?;
+
+    let mount_point = instance.work_dir.join("seed.mnt");
+    fs::create_dir_all(&mount_point)?;
+
+    run_tool(
+        "mount",
+        &[
+            "-o".into(),
+            "loop".into(),
+            instance.overlay_disk.to_string_lossy().into_owned(),
+            mount_point.to_string_lossy().into_owned(),
+        ],
+    )
+    .await?;
+
+    // Unmount no matter how the seeding itself fares; a disk left mounted
+    // would still be attached to the VM, with hostd's mount leaking.
+    let seed_result = async {
+        let hba_dir = mount_point.join("upper/etc/postgresql/16/main/pg_hba.d");
+        fs::create_dir_all(&hba_dir)?;
+        fs::write(
+            hba_dir.join("00-tikovm.conf"),
+            format!(
+                "# Seeded by hostd at VM creation: password auth only from the\n\
+                 # VM's project subnet (the host's bridge IP + sibling VMs).\n\
+                 host all all {} scram-sha-256\n",
+                net.subnet
+            ),
+        )?;
+        Ok::<_, Error>(())
+    }
+    .await;
+
+    let umount_result =
+        run_tool("umount", &[mount_point.to_string_lossy().into_owned()]).await;
+    let _ = fs::remove_dir(&mount_point);
+
+    seed_result?;
+    umount_result
+}
+
+/// Run a root-requiring host tool (mount/umount) and check its exit status.
+async fn run_tool(tool: &str, args: &[String]) -> Result<()> {
+    let status = process::Command::new(tool)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map_err(|e| Error::vmm(format!("spawn {tool}: {e}")))?;
+    if !status.success() {
+        return Err(Error::vmm(format!("{tool} {args:?} failed: {status}")));
     }
     Ok(())
 }

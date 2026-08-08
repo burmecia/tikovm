@@ -10,6 +10,15 @@ use tracing::debug;
 
 use crate::error::{Error, Result};
 
+/// Cap on the response headers we are willing to read (they are a handful
+/// of lines; anything bigger means a confused peer).
+const MAX_HEADER_BYTES: usize = 8192;
+
+/// Poll granularity of `wait_until_running`.
+const RUNNING_POLL: Duration = Duration::from_millis(50);
+
+/// HTTP client for one VM's Firecracker API socket. Each request opens a
+/// fresh connection (`Connection: close`), which Firecracker handles fine.
 pub(super) struct FcApiClient {
     socket_path: PathBuf,
 }
@@ -21,33 +30,29 @@ impl FcApiClient {
         }
     }
 
+    /// PUT a JSON body, discarding the response body on success.
     pub(super) async fn put(&self, path: &str, body: &JsonValue) -> Result<()> {
-        let _ = self.request("PUT", path, Some(body)).await?;
-        Ok(())
+        self.request("PUT", path, Some(body)).await.map(|_| ())
     }
 
+    /// PATCH a JSON body, discarding the response body on success.
     pub(super) async fn patch(&self, path: &str, body: &JsonValue) -> Result<()> {
-        let _ = self.request("PATCH", path, Some(body)).await?;
-        Ok(())
+        self.request("PATCH", path, Some(body)).await.map(|_| ())
     }
 
+    /// GET and parse the response body as JSON.
     pub(super) async fn get(&self, path: &str) -> Result<JsonValue> {
         let body_str = self.request("GET", path, None).await?;
         Ok(serde_json::from_str(&body_str)?)
     }
 
     /// Poll the instance info endpoint until Firecracker reports the VM as
-    /// `Running`, i.e. the InstanceStart action has fully taken effect.
+    /// `Running`, i.e. the `InstanceStart` action has fully taken effect.
     pub(super) async fn wait_until_running(&self, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
         loop {
-            let state = self
-                .get("/")
-                .await?
-                .get("state")
-                .and_then(JsonValue::as_str)
-                .unwrap_or("")
-                .to_string();
+            let info = self.get("/").await?;
+            let state = info.get("state").and_then(JsonValue::as_str).unwrap_or("");
             if state == "Running" {
                 return Ok(());
             }
@@ -57,12 +62,17 @@ impl FcApiClient {
                     timeout.as_secs()
                 )));
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(RUNNING_POLL).await;
         }
     }
 
+    /// One HTTP/1.1 round-trip: write the request, read headers and body,
+    /// and map non-2xx responses (Firecracker's `fault_message` when
+    /// present) to an error.
     async fn request(&self, method: &str, path: &str, body: Option<&JsonValue>) -> Result<String> {
-        let body_str = body.map(|b| b.to_string()).unwrap_or_default();
+        let body_str = body
+            .map(std::string::ToString::to_string)
+            .unwrap_or_default();
         let request = format!(
             "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n\
              Content-Length: {len}\r\nConnection: close\r\n\r\n{body}",
@@ -84,7 +94,7 @@ impl FcApiClient {
             if header_buf.ends_with(b"\r\n\r\n") {
                 break;
             }
-            if header_buf.len() > 8192 {
+            if header_buf.len() > MAX_HEADER_BYTES {
                 return Err(Error::io_other("FC API response headers too large"));
             }
         }
@@ -110,13 +120,13 @@ impl FcApiClient {
         if content_length > 0 {
             stream.read_exact(&mut body_buf).await?;
         }
-        let body_str = String::from_utf8_lossy(&body_buf).to_string();
+        let body_str = String::from_utf8_lossy(&body_buf).into_owned();
 
         if (200..300).contains(&status_code) {
             Ok(body_str)
         } else {
             debug!("FC API {method} {path} failed: HTTP {status_code}: {body_str}",);
-            let msg = serde_json::from_str::<serde_json::Value>(&body_str)
+            let msg = serde_json::from_str::<JsonValue>(&body_str)
                 .ok()
                 .and_then(|v| {
                     v.get("fault_message")

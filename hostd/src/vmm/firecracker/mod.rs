@@ -1,4 +1,5 @@
 mod api;
+mod auto_suspend;
 mod guest;
 mod schedule;
 mod setup;

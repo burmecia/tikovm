@@ -61,7 +61,7 @@ async fn main() -> Result<()> {
         &args.assets_dir,
         &args.work_dir,
         Arc::new(net_mgr),
-    )?);
+    ));
     fc_vmm.start_background_tasks();
     let tokens = Arc::new(ProxyTokens::new());
     let api_server = ApiServer::new(fc_vmm.clone(), tokens.clone())?;

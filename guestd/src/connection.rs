@@ -11,19 +11,20 @@ use crate::proto::Request;
 
 /// Serve one host connection until it drops: parse each line as a request
 /// and dispatch it to the agent, then release the connection's writer.
-pub(crate) fn handle(reader: File, writer: ConnWriter, agent: Arc<Agent>) {
+pub(crate) fn handle(reader: File, writer: &ConnWriter, agent: &Arc<Agent>) {
     for line in BufReader::new(reader).lines() {
-        match line {
-            Ok(line) => match serde_json::from_str::<Request>(&line) {
-                Ok(request) => agent.handle_request(request),
-                Err(e) => warn!(error = %e, line, "ignoring malformed request"),
-            },
+        let line = match line {
+            Ok(line) => line,
             Err(e) => {
                 info!(error = %e, "connection read error");
                 break;
             }
+        };
+        match serde_json::from_str::<Request>(&line) {
+            Ok(request) => agent.handle_request(request),
+            Err(e) => warn!(error = %e, line, "ignoring malformed request"),
         }
     }
-    agent.clear_conn(&writer);
+    agent.clear_conn(writer);
     info!("host disconnected");
 }

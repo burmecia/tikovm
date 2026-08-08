@@ -20,6 +20,10 @@ use crate::error::{Error, Result};
 /// Vsock port guestd listens on inside the guest.
 pub(super) const GUESTD_PORT: u32 = 5000;
 
+/// Cap on the `CONNECT` handshake reply (it is a handful of bytes;
+/// anything longer means a confused peer).
+const MAX_REPLY_BYTES: usize = 1024;
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum GuestRequest {
@@ -127,7 +131,7 @@ pub(super) async fn connect(uds_path: &Path) -> Result<UnixStream> {
             break;
         }
         line.push(byte[0]);
-        if line.len() > 1024 {
+        if line.len() > MAX_REPLY_BYTES {
             return Err(Error::vmm("vsock handshake: reply too long"));
         }
     }

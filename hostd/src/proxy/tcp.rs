@@ -4,22 +4,22 @@
 //! byte, so the accept loop (`server.rs`) can sniff it unambiguously. Only
 //! the startup phase is handled here:
 //!
-//! 1. SSLRequest / GSSENCRequest are answered with `N` (no TLS or GSSAPI
+//! 1. `SSLRequest` / `GSSENCRequest` are answered with `N` (no TLS or GSSAPI
 //!    encryption through the proxy); a default `sslmode=prefer` client then
-//!    retries in plaintext and sends the StartupMessage.
-//! 2. The StartupMessage carries the proxy JWT either in a standalone
+//!    retries in plaintext and sends the `StartupMessage`.
+//! 2. The `StartupMessage` carries the proxy JWT either in a standalone
 //!    `tikovm_token` parameter or — for stock libpq clients, which cannot
 //!    send arbitrary startup parameters and fold `options`/`PGOPTIONS` into
 //!    a single server-parsed string — as `-c tikovm_token=<jwt>` inside the
 //!    `options` parameter (e.g. `psql "... options='-c tikovm_token=<jwt>'"`).
 //!    The token is verified once (`proto: "tcp"` claims) and stripped —
 //!    a stock Postgres would reject the unknown parameter/GUC — then the
-//!    rewritten StartupMessage is forwarded to `<guest_ip>:<port>`.
+//!    rewritten `StartupMessage` is forwarded to `<guest_ip>:<port>`.
 //! 3. Both directions are then spliced with `copy_bidirectional`; nothing
 //!    beyond the first frame needs parsing, so the extended-query protocol,
 //!    COPY, etc. all work untouched.
 //!
-//! Startup-phase failures are reported as a Postgres ErrorResponse (FATAL),
+//! Startup-phase failures are reported as a Postgres `ErrorResponse` (FATAL),
 //! so psql prints a clean server error instead of hanging.
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -31,17 +31,17 @@ use super::target::resolve_target;
 use super::token::Proto;
 use crate::vmm::vm::VmId;
 
-/// StartupMessage parameter carrying the proxy JWT.
+/// `StartupMessage` parameter carrying the proxy JWT.
 const TOKEN_PARAM: &str = "tikovm_token";
-/// TOKEN_PARAM with the `=` suffix, for matching inside the options string.
+/// `TOKEN_PARAM` with the `=` suffix, for matching inside the options string.
 const TOKEN_PARAM_EQ: &str = "tikovm_token=";
 
-const PROTOCOL_V3: u32 = 196608; // 3.0, the only version our images speak
-const SSL_REQUEST: u32 = 80877103;
-const GSSENC_REQUEST: u32 = 80877104;
-const CANCEL_REQUEST: u32 = 80877102;
+const PROTOCOL_V3: u32 = 196_608; // 3.0, the only version our images speak
+const SSL_REQUEST: u32 = 80_877_103;
+const GSSENC_REQUEST: u32 = 80_877_104;
+const CANCEL_REQUEST: u32 = 80_877_102;
 
-/// Largest first frame accepted: a StartupMessage carrying a JWT is well
+/// Largest first frame accepted: a `StartupMessage` carrying a JWT is well
 /// under 1 KiB; anything bigger is not a Postgres startup we handle.
 const MAX_STARTUP_FRAME: usize = 16 * 1024;
 
@@ -66,7 +66,7 @@ pub(crate) fn looks_like_postgres(prefix: &[u8]) -> bool {
 }
 
 /// Entry point for a sniffed Postgres connection. Startup-phase failures
-/// are sent to the client as a Postgres ErrorResponse before closing.
+/// are sent to the client as a Postgres `ErrorResponse` before closing.
 pub(crate) async fn handle(state: ProxyState, mut client: TcpStream) {
     if let Err(message) = run(&state, &mut client).await {
         debug!(error = %message, "tcp proxy connection rejected");
@@ -97,10 +97,50 @@ async fn run(state: &ProxyState, client: &mut TcpStream) -> Result<(), String> {
     };
 
     let params = parse_startup(&frame).ok_or("malformed startup message")?;
-    // The token arrives either as a standalone tikovm_token parameter or as
-    // `-c tikovm_token=<jwt>` inside the `options` parameter (the only way
-    // for stock libpq/psql). Strip both forms before forwarding: a stock
-    // Postgres would reject the unknown parameter/GUC.
+    let (token, forwarded) = extract_token(params)?;
+
+    let claims = state.tokens.verify(&token).map_err(|e| e.to_string())?;
+    if claims.proto != Proto::Tcp {
+        return Err("token is not valid for TCP proxying".to_string());
+    }
+
+    // Track the session for auto-suspend (activity signal + the gate's
+    // in-flight count); the guard lives until the splice ends below.
+    let guard = state
+        .vmm
+        .activity()
+        .track(&VmId::from(claims.vm_id.as_str()));
+    let guest_ip = resolve_target(state, &claims)
+        .await
+        .map_err(|e| e.message)?;
+
+    let mut upstream = TcpStream::connect((guest_ip, claims.port))
+        .await
+        .map_err(|e| format!("failed to reach guest port {}: {e}", claims.port))?;
+
+    upstream
+        .write_all(&build_startup(&forwarded))
+        .await
+        .map_err(|e| format!("forward startup message: {e}"))?;
+
+    // From here on the connection is a plain byte splice.
+    let _guard = guard;
+    match tokio::io::copy_bidirectional(client, &mut upstream).await {
+        Ok((to_guest, to_client)) => {
+            debug!(to_guest, to_client, "tcp proxy session ended");
+        }
+        Err(e) => debug!(error = %e, "tcp proxy session ended with error"),
+    }
+    Ok(())
+}
+
+/// Pull the proxy JWT out of the startup parameters and return it plus the
+/// parameters to forward. The token arrives either as a standalone
+/// `tikovm_token` parameter or as `-c tikovm_token=<jwt>` inside the
+/// `options` parameter (the only way for stock libpq/psql). Both forms are
+/// stripped from the forwarded parameters: a stock Postgres would reject
+/// the unknown parameter/GUC.
+fn extract_token(params: Vec<(String, String)>) -> Result<(String, Vec<(String, String)>), String> {
     let mut token = None;
     let mut forwarded: Vec<(String, String)> = Vec::with_capacity(params.len());
     for (key, value) in params {
@@ -124,37 +164,7 @@ async fn run(state: &ProxyState, client: &mut TcpStream) -> Result<(), String> {
     let token = token.ok_or(format!(
         "missing proxy token (pass it as options='-c {TOKEN_PARAM}=<jwt>')"
     ))?;
-
-    let claims = state.tokens.verify(&token).map_err(|e| e.to_string())?;
-    if claims.proto != Proto::Tcp {
-        return Err("token is not valid for TCP proxying".to_string());
-    }
-
-    // Track the session for auto-suspend (activity signal + the gate's
-    // in-flight count); the guard lives until the splice ends below.
-    let guard = state.vmm.activity().track(&VmId::from(claims.vm_id.clone()));
-    let guest_ip = resolve_target(state, &claims)
-        .await
-        .map_err(|e| e.message)?;
-
-    let mut upstream = TcpStream::connect((guest_ip, claims.port))
-        .await
-        .map_err(|e| format!("failed to reach guest port {}: {e}", claims.port))?;
-
-    upstream
-        .write_all(&build_startup(&forwarded))
-        .await
-        .map_err(|e| format!("forward startup message: {e}"))?;
-
-    // From here on the connection is a plain byte splice.
-    let _guard = guard;
-    match tokio::io::copy_bidirectional(client, &mut upstream).await {
-        Ok((to_guest, to_client)) => {
-            debug!(to_guest, to_client, "tcp proxy session ended")
-        }
-        Err(e) => debug!(error = %e, "tcp proxy session ended with error"),
-    }
-    Ok(())
+    Ok((token, forwarded))
 }
 
 /// Read exactly one length-prefixed startup-phase frame (first 4 bytes are
@@ -178,7 +188,7 @@ async fn read_frame(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
     Ok(frame)
 }
 
-/// Parse a protocol-3.0 StartupMessage frame (including its 4-byte length)
+/// Parse a protocol-3.0 `StartupMessage` frame (including its 4-byte length)
 /// into its key/value parameters.
 fn parse_startup(frame: &[u8]) -> Option<Vec<(String, String)>> {
     let mut rest = &frame[8..]; // skip length + protocol version
@@ -201,8 +211,9 @@ fn parse_startup(frame: &[u8]) -> Option<Vec<(String, String)>> {
     }
 }
 
-/// Serialize startup parameters back into a protocol-3.0 StartupMessage
+/// Serialize startup parameters back into a protocol-3.0 `StartupMessage`
 /// frame with a recomputed length.
+#[allow(clippy::cast_possible_truncation)] // frame length fits u32: params are capped by MAX_STARTUP_FRAME
 fn build_startup(params: &[(String, String)]) -> Vec<u8> {
     let mut body = PROTOCOL_V3.to_be_bytes().to_vec();
     for (key, value) in params {
@@ -310,8 +321,9 @@ fn extract_from_options(options: &str) -> (Option<String>, String) {
     (token, rest)
 }
 
-/// Build a Postgres ErrorResponse frame (severity FATAL, SQLSTATE 28000 =
+/// Build a Postgres `ErrorResponse` frame (severity FATAL, SQLSTATE 28000 =
 /// invalid authorization specification) carrying `message`.
+#[allow(clippy::cast_possible_truncation)] // frame length fits u32: the message is a short static string
 fn error_response(message: &str) -> Vec<u8> {
     let mut body = Vec::new();
     for (code, value) in [
@@ -368,6 +380,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)] // MAX_STARTUP_FRAME always fits u32
     fn sniff_rejects_short_or_implausible() {
         assert!(!looks_like_postgres(b"\0\0\0"));
         // Length field smaller than a frame header.

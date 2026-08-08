@@ -33,7 +33,14 @@ impl From<&str> for TapName {
 
 impl From<&VmId> for TapName {
     fn from(vm_id: &VmId) -> Self {
-        let suffix = vm_id.strip_prefix("vm-").unwrap_or(vm_id.as_ref());
+        Self::for_vm(vm_id)
+    }
+}
+
+impl TapName {
+    /// TAP name for a VM id: `vm-1-aaaaaa` becomes `tap-1-aaaaaa`.
+    pub(crate) fn for_vm(vm_id: &str) -> Self {
+        let suffix = vm_id.strip_prefix("vm-").unwrap_or(vm_id);
         Self(format!("tap-{suffix}"))
     }
 }
@@ -41,9 +48,9 @@ impl From<&VmId> for TapName {
 /// A guest TCP port the VM exposes for its HTTP workloads, with a
 /// human-readable `label` describing the port's purpose (e.g. "web", "api").
 ///
-/// This is a VM-side registry only: nothing on the host forwards traffic to
-/// these ports yet. Host-side reachability (a JWT-authenticated reverse
-/// proxy) is a planned follow-up that will read this registry.
+/// This is a VM-side registry: the JWT-authenticated reverse proxy reads it
+/// on every connection to decide whether `<guest_ip>:<port>` is an allowed
+/// target, so removing a port revokes access immediately.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ExposedPort {
     pub port: u16,

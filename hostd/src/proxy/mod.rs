@@ -15,15 +15,15 @@
 //!   (`proto: "http"` claims) and the request is forwarded to
 //!   `http://<guest_ip>:<port>`.
 //! - TCP (`tcp.rs`), for the Postgres wire protocol: the JWT rides in the
-//!   `tikovm_token` parameter of the length-prefixed StartupMessage
+//!   `tikovm_token` parameter of the length-prefixed `StartupMessage`
 //!   (`proto: "tcp"` claims — stock libpq can set it via the `options`
 //!   connection parameter, e.g. `options='-c tikovm_token=<jwt>'`). Only the
 //!   startup phase is touched: SSL/GSS encryption requests get an `N`
 //!   (plaintext only; TLS termination is out of scope), the token parameter
 //!   is stripped (a stock Postgres would reject the unknown parameter), the
-//!   rewritten StartupMessage is forwarded, and both directions are then
+//!   rewritten `StartupMessage` is forwarded, and both directions are then
 //!   spliced with `tokio::io::copy_bidirectional`. Failures are reported as a
-//!   Postgres ErrorResponse so psql shows a clean server error.
+//!   Postgres `ErrorResponse` so psql shows a clean server error.
 
 mod http;
 mod server;
@@ -31,5 +31,6 @@ mod target;
 mod tcp;
 mod token;
 
+pub(crate) use http::bearer_token;
 pub(crate) use server::ProxyServer;
 pub(crate) use token::{DEFAULT_TTL_SECS, Proto, ProxyTokens};

@@ -57,6 +57,6 @@ fn main() {
         };
         agent.set_conn(writer.clone());
         let agent = agent.clone();
-        thread::spawn(move || connection::handle(conn, writer, agent));
+        thread::spawn(move || connection::handle(conn, &writer, &agent));
     }
 }

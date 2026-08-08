@@ -4,7 +4,7 @@
 //! unit-testable without root; `NetworkManager` applies the resulting plans
 //! via the `host` module.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::Ipv4Addr;
 
 use serde::{Deserialize, Serialize};
@@ -50,6 +50,18 @@ pub(super) struct ProjectSetup {
     pub(super) supernet: Ipv4Net,
 }
 
+impl ProjectState {
+    /// Whether this project's VM map contains `vm_id`.
+    fn owns_vm(&self, vm_id: &VmId) -> bool {
+        self.vms.values().any(|id| id.as_str() == &**vm_id)
+    }
+
+    /// Remove `vm_id` from the VM map, if present.
+    fn remove_vm(&mut self, vm_id: &VmId) {
+        self.vms.retain(|_, id| id.as_str() != &**vm_id);
+    }
+}
+
 /// What `release` must tear down on the host.
 pub(super) struct ReleasePlan {
     pub(super) tap: TapName,
@@ -66,17 +78,17 @@ impl NetState {
         project_id: u64,
         vm_id: &VmId,
         tap_name: &TapName,
-        supernet: &Ipv4Net,
+        supernet: Ipv4Net,
         subnet_prefix: u8,
     ) -> Result<AllocPlan> {
         if let Some(project) = self.projects.get_mut(&project_id) {
-            if project.vms.values().any(|id| id.as_str() == &**vm_id) {
+            if project.owns_vm(vm_id) {
                 return Err(Error::net(format!(
                     "vm {vm_id} already has an IP allocated"
                 )));
             }
             let subnet = supernet.subnet(project.subnet_index, subnet_prefix);
-            let guest_ip = lowest_free_ip(&subnet, &project.vms).ok_or_else(|| {
+            let guest_ip = lowest_free_ip(subnet, &project.vms).ok_or_else(|| {
                 Error::net(format!(
                     "subnet {subnet} for project {project_id} is exhausted"
                 ))
@@ -94,8 +106,7 @@ impl NetState {
             });
         }
 
-        let used: std::collections::HashSet<u32> =
-            self.projects.values().map(|p| p.subnet_index).collect();
+        let used: HashSet<u32> = self.projects.values().map(|p| p.subnet_index).collect();
         let subnet_index = (0..supernet.subnet_count(subnet_prefix))
             .find(|i| !used.contains(i))
             .ok_or_else(|| Error::net(format!("supernet {supernet} has no free subnets")))?;
@@ -128,7 +139,7 @@ impl NetState {
                 bridge: bridge.clone(),
                 gateway,
                 subnet,
-                supernet: *supernet,
+                supernet,
             }),
             bridge,
             vm_net: VmNet::new(tap_name.clone(), guest_ip, gateway, subnet.to_string()),
@@ -138,7 +149,7 @@ impl NetState {
     /// Undo a previously returned `alloc` after host-side setup failed.
     pub(super) fn rollback_alloc(&mut self, project_id: u64, vm_id: &VmId) {
         if let Some(project) = self.projects.get_mut(&project_id) {
-            project.vms.retain(|_, id| id.as_str() != &**vm_id);
+            project.remove_vm(vm_id);
             if project.vms.is_empty() {
                 self.projects.remove(&project_id);
             }
@@ -150,17 +161,15 @@ impl NetState {
     pub(super) fn release(
         &mut self,
         vm_id: &VmId,
-        supernet: &Ipv4Net,
+        supernet: Ipv4Net,
         subnet_prefix: u8,
     ) -> Option<ReleasePlan> {
-        let project_id = self.projects.iter().find_map(|(pid, p)| {
-            p.vms
-                .values()
-                .any(|id| id.as_str() == &**vm_id)
-                .then_some(*pid)
-        })?;
+        let project_id = self
+            .projects
+            .iter()
+            .find_map(|(pid, p)| p.owns_vm(vm_id).then_some(*pid))?;
         let project = self.projects.get_mut(&project_id)?;
-        project.vms.retain(|_, id| id.as_str() != &**vm_id);
+        project.remove_vm(vm_id);
 
         let teardown = if project.vms.is_empty() {
             let project = self.projects.remove(&project_id)?;
@@ -168,7 +177,7 @@ impl NetState {
                 bridge: project.bridge,
                 gateway: project.gateway,
                 subnet: supernet.subnet(project.subnet_index, subnet_prefix),
-                supernet: *supernet,
+                supernet,
             })
         } else {
             None
@@ -183,7 +192,7 @@ impl NetState {
 
 /// Lowest usable host IP in `subnet` not present in `used`: skips the network
 /// address (.0), the gateway (.1) and the broadcast address (last).
-fn lowest_free_ip(subnet: &Ipv4Net, used: &BTreeMap<Ipv4Addr, String>) -> Option<Ipv4Addr> {
+fn lowest_free_ip(subnet: Ipv4Net, used: &BTreeMap<Ipv4Addr, String>) -> Option<Ipv4Addr> {
     (2..subnet.size() - 1)
         .map(|idx| subnet.host(idx))
         .find(|ip| !used.contains_key(ip))
@@ -203,7 +212,7 @@ mod tests {
                 project_id,
                 &VmId::from(vm_id),
                 &TapName::from(vm_id),
-                &supernet(),
+                supernet(),
                 24,
             )
             .unwrap()
@@ -265,7 +274,7 @@ mod tests {
             7,
             &VmId::from("vm-7-aaaaaa"),
             &TapName::from("vm-7-aaaaaa"),
-            &supernet(),
+            supernet(),
             24,
         );
         assert!(dup.is_err());
@@ -279,14 +288,14 @@ mod tests {
 
         // Non-last release keeps the project.
         let plan = state
-            .release(&VmId::from("vm-7-aaaaaa"), &supernet(), 24)
+            .release(&VmId::from("vm-7-aaaaaa"), supernet(), 24)
             .unwrap();
         assert!(plan.teardown.is_none());
         assert!(state.projects.contains_key(&7));
 
         // Last release tears the project down...
         let plan = state
-            .release(&VmId::from("vm-7-bbbbbb"), &supernet(), 24)
+            .release(&VmId::from("vm-7-bbbbbb"), supernet(), 24)
             .unwrap();
         let teardown = plan.teardown.unwrap();
         assert_eq!(teardown.bridge, "tbr-7");
@@ -303,7 +312,7 @@ mod tests {
         let mut state = NetState::default();
         alloc(&mut state, 7, "vm-7-aaaaaa");
         alloc(&mut state, 7, "vm-7-bbbbbb");
-        state.release(&VmId::from("vm-7-aaaaaa"), &supernet(), 24);
+        state.release(&VmId::from("vm-7-aaaaaa"), supernet(), 24);
         let plan = alloc(&mut state, 7, "vm-7-cccccc");
         assert_eq!(
             plan.vm_net.guest_ip,
@@ -316,7 +325,7 @@ mod tests {
         let mut state = NetState::default();
         assert!(
             state
-                .release(&VmId::from("vm-1-zzzzzz"), &supernet(), 24)
+                .release(&VmId::from("vm-1-zzzzzz"), supernet(), 24)
                 .is_none()
         );
     }
@@ -331,7 +340,7 @@ mod tests {
                 1,
                 &VmId::from("vm-1-aaaaaa"),
                 &TapName::from("vm-1-aaaaaa"),
-                &supernet,
+                supernet,
                 30,
             )
             .unwrap();
@@ -340,7 +349,7 @@ mod tests {
             1,
             &VmId::from("vm-1-bbbbbb"),
             &TapName::from("vm-1-bbbbbb"),
-            &supernet,
+            supernet,
             30,
         );
         assert!(second.is_err());
@@ -357,7 +366,7 @@ mod tests {
                     project,
                     &VmId::from(format!("vm-{project}-aaaaaa")),
                     &TapName::from(format!("vm-{project}-aaaaaa").as_str()),
-                    &supernet,
+                    supernet,
                     30,
                 )
                 .unwrap();
@@ -366,7 +375,7 @@ mod tests {
             3,
             &VmId::from("vm-3-cccccc"),
             &TapName::from("vm-3-cccccc"),
-            &supernet,
+            supernet,
             30,
         );
         assert!(third.is_err());

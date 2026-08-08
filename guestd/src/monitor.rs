@@ -37,7 +37,9 @@ struct IdleCheckConfig {
 /// The auto-suspend monitor: holds the current detector config and spawns
 /// the monitor thread on first use. Cheap to construct; the `Agent` owns it.
 pub(crate) struct IdleMonitor {
-    config: Arc<Mutex<Option<IdleCheckConfig>>>,
+    /// Shared behind an `Arc` so the monitor loop's per-cycle re-read clones
+    /// one pointer instead of the whole command vector.
+    config: Arc<Mutex<Option<Arc<IdleCheckConfig>>>>,
     started: AtomicBool,
 }
 
@@ -62,33 +64,30 @@ impl IdleMonitor {
             debug!("auto-suspend idle detector disabled");
             return;
         }
-        *self.config.lock().unwrap() = Some(IdleCheckConfig {
+        *self.config.lock().unwrap() = Some(Arc::new(IdleCheckConfig {
             cmd,
             interval: Duration::from_secs(interval_secs.max(1)),
-        });
+        }));
         if self.started.swap(true, Ordering::SeqCst) {
             return; // thread already running; it picks up the new config
         }
         let monitor = Arc::clone(self);
         let agent = Arc::clone(agent);
-        thread::spawn(move || monitor.run(agent));
+        thread::spawn(move || monitor.run(&agent));
     }
 
     /// Monitor loop: run the configured check every interval, emit `idle`
     /// when it reports idle. Re-reads the config each cycle so reconfigures
     /// (e.g. after a hostd reconnect) take effect without a restart.
-    fn run(&self, agent: Arc<Agent>) {
+    fn run(&self, agent: &Arc<Agent>) {
         loop {
-            let current = {
-                let config = self.config.lock().unwrap();
-                config.as_ref().map(|c| (c.cmd.clone(), c.interval))
-            };
-            let Some((cmd, interval)) = current else {
+            let current = self.config.lock().unwrap().clone();
+            let Some(config) = current else {
                 thread::sleep(DISABLED_POLL);
                 continue;
             };
-            thread::sleep(interval);
-            if is_idle(&cmd) {
+            thread::sleep(config.interval);
+            if is_idle(&config.cmd) {
                 agent.send_idle_event();
             }
         }
@@ -98,8 +97,10 @@ impl IdleMonitor {
 /// Run the check command and interpret its result: exit status 0 = idle.
 /// Failures to spawn or timeouts count as "not idle".
 fn is_idle(cmd: &[String]) -> bool {
-    let mut child = match Command::new(&cmd[0])
-        .args(&cmd[1..])
+    // configure() rejects an empty cmd, so this split never fails.
+    let (prog, args) = cmd.split_first().expect("configure rejects empty cmd");
+    let mut child = match Command::new(prog)
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -111,16 +112,13 @@ fn is_idle(cmd: &[String]) -> bool {
             return false;
         }
     };
-    match wait_with_timeout(&mut child, CHECK_TIMEOUT) {
-        Some(status) => {
-            let idle = status.success();
-            debug!(cmd = ?cmd, %status, idle, "auto-suspend idle check finished");
-            idle
-        }
-        None => {
-            warn!(cmd = ?cmd, "auto-suspend idle check timed out");
-            false
-        }
+    if let Some(status) = wait_with_timeout(&mut child, CHECK_TIMEOUT) {
+        let idle = status.success();
+        debug!(cmd = ?cmd, %status, idle, "auto-suspend idle check finished");
+        idle
+    } else {
+        warn!(cmd = ?cmd, "auto-suspend idle check timed out");
+        false
     }
 }
 

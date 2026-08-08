@@ -17,7 +17,7 @@ use crate::vmm::vm::{VmId, VmState};
 
 /// A proxy failure: an HTTP status (the HTTP mode renders it as the uniform
 /// JSON error body) plus a human-readable message (the TCP mode sends it as
-/// a Postgres ErrorResponse).
+/// a Postgres `ErrorResponse`).
 pub(crate) struct ProxyError {
     pub(crate) status: StatusCode,
     pub(crate) message: String,
@@ -30,6 +30,11 @@ impl ProxyError {
             message: message.into(),
         }
     }
+
+    /// A 500 wrapper around an internal error's message.
+    fn internal(e: impl std::fmt::Display) -> Self {
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    }
 }
 
 /// Re-validate the claimed target against live VM state and return the
@@ -39,18 +44,15 @@ pub(crate) async fn resolve_target(
     state: &ProxyState,
     claims: &Claims,
 ) -> Result<IpAddr, ProxyError> {
-    let vm_id = VmId::from(claims.vm_id.clone());
+    let vm_id = VmId::from(claims.vm_id.as_str());
     let instance_ref = state
         .vmm
         .get_vm(&vm_id)
         .await
-        .map_err(|e| ProxyError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(ProxyError::internal)?
         .ok_or_else(|| ProxyError::new(StatusCode::NOT_FOUND, "vm not found"))?;
 
-    let vm_state = instance_ref
-        .lock()
-        .map_err(|e| ProxyError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .state;
+    let vm_state = instance_ref.lock().map_err(ProxyError::internal)?.state;
 
     // Wake an auto-suspended VM before validating; ensure_started
     // deduplicates concurrent wake-ups.
@@ -68,9 +70,7 @@ pub(crate) async fn resolve_target(
     // Validate against live state in a short scope so the instance lock
     // (a std MutexGuard, which is !Send) never crosses an await.
     let guest_ip = {
-        let instance = instance_ref
-            .lock()
-            .map_err(|e| ProxyError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let instance = instance_ref.lock().map_err(ProxyError::internal)?;
 
         if instance.state != VmState::Started {
             return Err(ProxyError::new(

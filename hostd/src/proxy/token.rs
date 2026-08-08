@@ -57,7 +57,7 @@ impl ProxyTokens {
     }
 
     /// Mint a token for `vm_id` + `port` + forwarding `proto`, valid for
-    /// `ttl_secs` (clamped to 1..=MAX_TTL_SECS). Returns the token and its
+    /// `ttl_secs` (clamped to `1..=MAX_TTL_SECS`). Returns the token and its
     /// expiry time.
     pub(crate) fn mint(
         &self,
@@ -66,15 +66,15 @@ impl ProxyTokens {
         proto: Proto,
         ttl_secs: u64,
     ) -> Result<(String, DateTime<Utc>)> {
-        let ttl = ttl_secs.clamp(1, MAX_TTL_SECS) as i64;
+        let ttl = ttl_secs.clamp(1, MAX_TTL_SECS).cast_signed();
         let now = Utc::now();
         let expires_at = now + Duration::seconds(ttl);
         let claims = Claims {
             vm_id: vm_id.to_string(),
             port,
             proto,
-            iat: now.timestamp() as u64,
-            exp: expires_at.timestamp() as u64,
+            iat: now.timestamp().cast_unsigned(),
+            exp: expires_at.timestamp().cast_unsigned(),
         };
         let token = encode(
             &Header::default(),
@@ -90,19 +90,17 @@ impl ProxyTokens {
         // No expiry leeway: proxy tokens are meant to be short-lived.
         let mut validation = Validation::default();
         validation.leeway = 0;
-        decode::<Claims>(
-            token,
-            &DecodingKey::from_secret(&self.secret),
-            &validation,
-        )
-        .map(|data| data.claims)
-        .map_err(|e| {
-            let msg = match e.kind() {
-                jsonwebtoken::errors::ErrorKind::ExpiredSignature => "token expired".to_string(),
-                _ => format!("invalid token: {e}"),
-            };
-            Error::proxy_token(msg)
-        })
+        decode::<Claims>(token, &DecodingKey::from_secret(&self.secret), &validation)
+            .map(|data| data.claims)
+            .map_err(|e| {
+                let msg = match e.kind() {
+                    jsonwebtoken::errors::ErrorKind::ExpiredSignature => {
+                        "token expired".to_string()
+                    }
+                    _ => format!("invalid token: {e}"),
+                };
+                Error::proxy_token(msg)
+            })
     }
 }
 
@@ -141,7 +139,7 @@ mod tests {
         let (_, expires_at) = tokens
             .mint(&vm_id(), 8080, Proto::Http, MAX_TTL_SECS * 10)
             .unwrap();
-        let max_exp = Utc::now() + Duration::seconds(MAX_TTL_SECS as i64 + 5);
+        let max_exp = Utc::now() + Duration::seconds(MAX_TTL_SECS.cast_signed() + 5);
         assert!(expires_at <= max_exp);
     }
 
@@ -150,10 +148,7 @@ mod tests {
         let issuer = ProxyTokens::new();
         let other = ProxyTokens::new();
         let (token, _) = issuer.mint(&vm_id(), 8080, Proto::Http, 60).unwrap();
-        assert!(matches!(
-            other.verify(&token),
-            Err(Error::ProxyToken(_))
-        ));
+        assert!(matches!(other.verify(&token), Err(Error::ProxyToken(_))));
     }
 
     #[test]
@@ -165,8 +160,8 @@ mod tests {
             vm_id: vm_id().to_string(),
             port: 8080,
             proto: Proto::Http,
-            iat: (now - Duration::seconds(120)).timestamp() as u64,
-            exp: (now - Duration::seconds(60)).timestamp() as u64,
+            iat: (now - Duration::seconds(120)).timestamp().cast_unsigned(),
+            exp: (now - Duration::seconds(60)).timestamp().cast_unsigned(),
         };
         let token = encode(
             &Header::default(),

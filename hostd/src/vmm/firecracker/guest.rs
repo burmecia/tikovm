@@ -17,7 +17,7 @@ use tracing::{debug, warn};
 
 use crate::error::{Error, Result};
 use crate::vmm::vm::{VmId, VmInstanceRef};
-use crate::vmm::workload::{WorkloadId, WorkloadLogEntry};
+use crate::vmm::workload::{Workload, WorkloadId, WorkloadLogEntry};
 
 use super::vmm::{FcVmEntry, FirecrackerVmm};
 use super::vsock::{self, GuestConnHandle, GuestEvent, GuestRequest};
@@ -173,6 +173,22 @@ impl FirecrackerVmm {
         debug!(vm_id = %vm_id, "guest connection closed");
     }
 
+    /// Apply `f` to a tracked workload, if the VM and the workload exist.
+    /// The shared lookup behind the per-workload guest events below.
+    fn with_workload_mut(
+        vms: &Arc<Mutex<HashMap<VmId, FcVmEntry>>>,
+        vm_id: &VmId,
+        workload_id: &WorkloadId,
+        f: impl FnOnce(&mut Workload),
+    ) {
+        if let Ok(mut vms) = vms.lock()
+            && let Some(entry) = vms.get_mut(vm_id)
+            && let Some(wl) = entry.workloads.get_mut(workload_id)
+        {
+            f(wl);
+        }
+    }
+
     fn handle_guest_event(
         vm_id: &VmId,
         vms: &Arc<Mutex<HashMap<VmId, FcVmEntry>>>,
@@ -183,12 +199,9 @@ impl FirecrackerVmm {
         match event {
             GuestEvent::Started { workload_id, pid } => {
                 debug!(vm_id = %vm_id, workload_id, pid, "workload started in guest");
-                if let Ok(mut vms) = vms.lock()
-                    && let Some(entry) = vms.get_mut(vm_id)
-                    && let Some(wl) = entry.workloads.get_mut(&WorkloadId(workload_id))
-                {
+                Self::with_workload_mut(vms, vm_id, &WorkloadId(workload_id), |wl| {
                     wl.mark_running(Some(pid));
-                }
+                });
             }
             GuestEvent::Output {
                 workload_id,
@@ -216,42 +229,33 @@ impl FirecrackerVmm {
                 signal,
             } => {
                 debug!(vm_id = %vm_id, workload_id, ?exit_code, ?signal, "workload exited in guest");
-                if let Ok(mut vms) = vms.lock()
-                    && let Some(entry) = vms.get_mut(vm_id)
-                    && let Some(wl) = entry.workloads.get_mut(&WorkloadId(workload_id))
-                {
+                Self::with_workload_mut(vms, vm_id, &WorkloadId(workload_id), |wl| {
                     wl.mark_finished(exit_code, signal);
-                }
+                });
             }
             GuestEvent::Error {
                 workload_id,
                 message,
             } => {
                 warn!(vm_id = %vm_id, ?workload_id, message, "guestd error");
-                if let Some(workload_id) = workload_id
-                    && let Ok(mut vms) = vms.lock()
-                    && let Some(entry) = vms.get_mut(vm_id)
-                    && let Some(wl) = entry.workloads.get_mut(&WorkloadId(workload_id))
-                {
-                    wl.mark_failed();
+                if let Some(workload_id) = workload_id {
+                    Self::with_workload_mut(vms, vm_id, &WorkloadId(workload_id), |wl| {
+                        wl.mark_failed();
+                    });
                 }
             }
             // Reconcile host state with guestd's table after a reconnect:
             // workloads hostd still thinks are active may have exited (or
             // merely started) while the connection was down.
             GuestEvent::ListResult { workloads } => {
-                if let Ok(mut vms) = vms.lock()
-                    && let Some(entry) = vms.get_mut(vm_id)
-                {
-                    for info in workloads {
-                        if let Some(wl) = entry.workloads.get_mut(&WorkloadId(info.workload_id)) {
-                            match info.state.as_str() {
-                                "running" => wl.mark_running(None),
-                                "exited" => wl.mark_finished(info.exit_code, info.signal),
-                                _ => {}
-                            }
+                for info in workloads {
+                    Self::with_workload_mut(vms, vm_id, &WorkloadId(info.workload_id), |wl| {
+                        match info.state.as_str() {
+                            "running" => wl.mark_running(None),
+                            "exited" => wl.mark_finished(info.exit_code, info.signal),
+                            _ => {}
                         }
-                    }
+                    });
                 }
             }
             // guestd's auto-suspend detector reports the guest as idle;

@@ -82,32 +82,24 @@ impl VmState {
     /// step either completes the operation or rolls back to the previous
     /// stable state on failure.
     fn can_transition_to(self, next: VmState) -> bool {
-        use VmState::*;
+        use VmState::{
+            Created, Creating, Destroyed, Destroying, Paused, Pausing, Restoring, Resuming,
+            Started, Starting, Suspended, Suspending,
+        };
         matches!(
             (self, next),
-            (Creating, Created)
-                | (Creating, Destroyed)
-                | (Created, Starting)
-                | (Created, Destroying)
-                | (Starting, Started)
-                | (Starting, Created)
-                | (Started, Pausing)
-                | (Started, Suspending)
-                | (Started, Destroying)
-                | (Pausing, Paused)
-                | (Pausing, Started)
-                | (Paused, Resuming)
-                | (Paused, Suspending)
-                | (Paused, Destroying)
-                | (Resuming, Started)
-                | (Resuming, Paused)
-                | (Suspending, Suspended)
-                | (Suspending, Started)
-                | (Suspended, Restoring)
-                | (Suspended, Destroying)
-                | (Restoring, Started)
-                | (Restoring, Suspended)
-                | (Destroying, Destroyed)
+            (Creating | Starting, Created)
+                | (Creating | Destroying, Destroyed)
+                | (Created, Starting | Destroying)
+                | (
+                    Starting | Pausing | Resuming | Suspending | Restoring,
+                    Started
+                )
+                | (Started, Pausing | Suspending | Destroying)
+                | (Pausing | Resuming, Paused)
+                | (Paused, Resuming | Suspending | Destroying)
+                | (Suspending | Restoring, Suspended)
+                | (Suspended, Restoring | Destroying)
         )
     }
 
@@ -320,9 +312,8 @@ impl VmInstance {
         VmSnapshot::new(&self.vm_id, &self.work_dir)
     }
 
-    pub(crate) fn cleanup_runtime_artifacts(&self) -> Result<()> {
+    pub(crate) fn cleanup_runtime_artifacts(&self) {
         fs::remove_dir_all(&self.work_dir).ok(); // ignore errors
-        Ok(())
     }
 }
 

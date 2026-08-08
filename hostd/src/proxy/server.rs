@@ -34,7 +34,8 @@ pub(crate) struct ProxyState {
     pub(crate) client: Client<HttpConnector, ProxyBody>,
 }
 
-/// The proxy server: accepts TCP connections and serves HTTP/1.1 on them.
+/// The proxy server: accepts TCP connections and dispatches each to the
+/// HTTP/1.1 handler or the raw-TCP (Postgres) handler by peeked prefix.
 pub(crate) struct ProxyServer {
     vmm: Arc<dyn Vmm>,
     tokens: Arc<ProxyTokens>,

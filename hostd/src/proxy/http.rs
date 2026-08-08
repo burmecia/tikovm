@@ -24,6 +24,16 @@ use crate::vmm::vm::VmId;
 /// Body type shared by proxied upstream responses and local error responses.
 pub(crate) type ProxyBody = BoxBody<Bytes, hyper::Error>;
 
+/// Extract the `Bearer <token>` credential from the Authorization header,
+/// if present and well-formed. Shared by the proxy (JWT) and the management
+/// API middleware (static token).
+pub(crate) fn bearer_token(headers: &hyper::header::HeaderMap) -> Option<&str> {
+    headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+}
+
 /// Hop-by-hop headers that must not be forwarded in either direction, plus
 /// `host` (rewritten for the upstream) and `authorization` (the proxy JWT is
 /// hostd's, not the guest's).
@@ -72,20 +82,19 @@ async fn forward(
     // signal and the gate's in-flight count. The guard lives in the
     // response body so a streamed reply keeps the VM "active" until the
     // last byte is sent.
-    let guard = state.vmm.activity().track(&VmId::from(claims.vm_id.clone()));
+    let guard = state
+        .vmm
+        .activity()
+        .track(&VmId::from(claims.vm_id.as_str()));
     let guest_ip = resolve_target(state, &claims).await?;
 
     let authority = format!("{guest_ip}:{}", claims.port);
-    let path_and_query = req
-        .uri()
-        .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or("/");
+    let path_and_query = req.uri().path_and_query().map_or("/", |pq| pq.as_str());
     let upstream_uri = format!("http://{authority}{path_and_query}");
 
     let (parts, body) = req.into_parts();
     let mut builder = Request::builder().method(parts.method).uri(&upstream_uri);
-    for (name, value) in parts.headers.iter() {
+    for (name, value) in &parts.headers {
         if !STRIPPED_REQUEST_HEADERS.contains(name) {
             builder = builder.header(name, value);
         }
@@ -95,21 +104,17 @@ async fn forward(
         .body(body.boxed())
         .map_err(|e| ProxyError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let upstream_resp = state
-        .client
-        .request(upstream_req)
-        .await
-        .map_err(|e| {
-            warn!(error = %e, "upstream request failed");
-            ProxyError::new(
-                StatusCode::BAD_GATEWAY,
-                format!("failed to reach guest port {}: {e}", claims.port),
-            )
-        })?;
+    let upstream_resp = state.client.request(upstream_req).await.map_err(|e| {
+        warn!(error = %e, "upstream request failed");
+        ProxyError::new(
+            StatusCode::BAD_GATEWAY,
+            format!("failed to reach guest port {}: {e}", claims.port),
+        )
+    })?;
 
     let (parts, body) = upstream_resp.into_parts();
     let mut response = Response::builder().status(parts.status);
-    for (name, value) in parts.headers.iter() {
+    for (name, value) in &parts.headers {
         if !STRIPPED_RESPONSE_HEADERS.contains(name) {
             response = response.header(name, value);
         }
@@ -156,12 +161,7 @@ impl hyper::body::Body for GuardedBody {
 /// Extract and verify the bearer JWT; the claims name the target VM + port.
 fn authenticate(state: &ProxyState, req: &Request<Incoming>) -> Result<Claims, ProxyError> {
     let unauthorized = |msg: &str| ProxyError::new(StatusCode::UNAUTHORIZED, msg.to_string());
-    let token = req
-        .headers()
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .ok_or_else(|| unauthorized("missing bearer token"))?;
+    let token = bearer_token(req.headers()).ok_or_else(|| unauthorized("missing bearer token"))?;
     let claims = state
         .tokens
         .verify(token)

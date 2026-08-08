@@ -21,9 +21,9 @@ use crate::{
 /// How long exec waits for the command to finish before stopping it and
 /// failing the request, so a hung command cannot hang the HTTP connection
 /// forever.
-const EXEC_TIMEOUT: Duration = Duration::from_secs(300);
+const EXEC_TIMEOUT: Duration = Duration::from_mins(5);
 
-/// How often exec polls the workload state: get_workload is a cheap
+/// How often exec polls the workload state: `get_workload` is a cheap
 /// in-memory read and half-second granularity is plenty for command
 /// execution.
 const EXEC_POLL_INTERVAL: Duration = Duration::from_millis(500);

@@ -12,7 +12,7 @@ use std::time::Duration;
 use tracing::warn;
 
 use crate::monitor::IdleMonitor;
-use crate::proto::{Event, Request, WorkloadInfo};
+use crate::proto::{Event, Request, Stream, WorkloadInfo, WorkloadState};
 
 /// Grace period between SIGTERM and SIGKILL when stopping a workload.
 const STOP_GRACE: Duration = Duration::from_secs(2);
@@ -25,7 +25,7 @@ pub(crate) type ConnWriter = Arc<Mutex<File>>;
 
 struct WorkloadEntry {
     pid: u32,
-    /// (exit_code, signal) once the reap thread has collected the child.
+    /// (`exit_code`, signal) once the reap thread has collected the child.
     result: Option<(Option<i32>, Option<i32>)>,
 }
 
@@ -54,7 +54,7 @@ impl Agent {
                 cmd,
                 env,
                 cwd,
-            } => self.start(workload_id, cmd, env, cwd),
+            } => self.start(workload_id, &cmd, env, cwd),
             Request::Stop { workload_id } => self.stop(workload_id),
             Request::List => self.list(),
             Request::ConfigureAutoSuspend {
@@ -96,30 +96,34 @@ impl Agent {
             }
         };
         line.push('\n');
-        let conn = self.conn.lock().unwrap().clone();
-        if let Some(conn) = conn {
+        if let Some(conn) = self.conn.lock().unwrap().clone() {
             let _ = conn.lock().unwrap().write_all(line.as_bytes());
         }
+    }
+
+    /// Emit an `error` event tied to a workload.
+    fn send_error(&self, workload_id: String, message: impl Into<String>) {
+        self.send_event(&Event::Error {
+            workload_id: Some(workload_id),
+            message: message.into(),
+        });
     }
 
     fn start(
         self: &Arc<Self>,
         workload_id: String,
-        cmd: Vec<String>,
+        cmd: &[String],
         env: HashMap<String, String>,
         cwd: Option<String>,
     ) {
-        if cmd.is_empty() {
-            self.send_event(&Event::Error {
-                workload_id: Some(workload_id),
-                message: "cmd must not be empty".to_string(),
-            });
+        let Some((prog, args)) = cmd.split_first() else {
+            self.send_error(workload_id, "cmd must not be empty");
             return;
-        }
+        };
 
-        let mut command = Command::new(&cmd[0]);
+        let mut command = Command::new(prog);
         command
-            .args(&cmd[1..])
+            .args(args)
             .envs(env)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -140,10 +144,7 @@ impl Agent {
         let mut child = match command.spawn() {
             Ok(c) => c,
             Err(e) => {
-                self.send_event(&Event::Error {
-                    workload_id: Some(workload_id),
-                    message: format!("spawn {}: {e}", cmd[0]),
-                });
+                self.send_error(workload_id, format!("spawn {prog}: {e}"));
                 return;
             }
         };
@@ -159,15 +160,20 @@ impl Agent {
         });
 
         // Forward stdout/stderr chunks as output events.
-        let pipes: [(Option<Box<dyn Read + Send>>, &'static str); 2] = [
-            (child.stdout.take().map(|p| Box::new(p) as _), "stdout"),
-            (child.stderr.take().map(|p| Box::new(p) as _), "stderr"),
+        let pipes = [
+            (
+                child.stdout.take().map(|p| Box::new(p) as _),
+                Stream::Stdout,
+            ),
+            (
+                child.stderr.take().map(|p| Box::new(p) as _),
+                Stream::Stderr,
+            ),
         ];
-        for (pipe, stream_name) in pipes {
-            let Some(pipe) = pipe else { continue };
+        for (pipe, stream) in pipes.into_iter().filter_map(|(p, s)| p.map(|p| (p, s))) {
             let agent = Arc::clone(self);
             let workload_id = workload_id.clone();
-            thread::spawn(move || agent.forward_output(pipe, workload_id, stream_name));
+            thread::spawn(move || agent.forward_output(pipe, &workload_id, stream));
         }
 
         // Reap the child and report its exit status.
@@ -175,6 +181,7 @@ impl Agent {
         thread::spawn(move || agent.reap(child, workload_id));
     }
 
+    #[allow(clippy::similar_names)] // pid/pgid are the distinct Unix terms
     fn stop(self: &Arc<Self>, workload_id: String) {
         let pid = {
             let workloads = self.workloads.lock().unwrap();
@@ -183,24 +190,21 @@ impl Agent {
                 Some(_) => return, // already finished
                 None => {
                     drop(workloads);
-                    self.send_event(&Event::Error {
-                        workload_id: Some(workload_id),
-                        message: "unknown workload".to_string(),
-                    });
+                    self.send_error(workload_id, "unknown workload");
                     return;
                 }
             }
         };
 
         // Negative pid = the child's whole process group (see start()).
-        let pgid = -(pid as i32);
+        let pgid = -(pid.cast_signed());
         // SAFETY: kill with a valid signal number.
         unsafe { libc::kill(pgid, libc::SIGTERM) };
 
         // Escalate to SIGKILL if the workload is still running after the
         // grace period. The reap thread reports the exit either way.
         let agent = Arc::clone(self);
-        thread::spawn(move || agent.escalate_kill(pgid, workload_id));
+        thread::spawn(move || agent.escalate_kill(pgid, &workload_id));
     }
 
     fn list(&self) {
@@ -212,9 +216,9 @@ impl Agent {
             .map(|(workload_id, entry)| WorkloadInfo {
                 workload_id: workload_id.clone(),
                 state: if entry.result.is_some() {
-                    "exited"
+                    WorkloadState::Exited
                 } else {
-                    "running"
+                    WorkloadState::Running
                 },
                 exit_code: entry.result.and_then(|(code, _)| code),
                 signal: entry.result.and_then(|(_, sig)| sig),
@@ -224,22 +228,16 @@ impl Agent {
     }
 
     /// Read a child output pipe to EOF, forwarding chunks as output events.
-    fn forward_output(
-        &self,
-        mut pipe: Box<dyn Read + Send>,
-        workload_id: String,
-        stream: &'static str,
-    ) {
+    fn forward_output(&self, mut pipe: Box<dyn Read + Send>, workload_id: &str, stream: Stream) {
         let mut buf = [0u8; OUTPUT_BUF_SIZE];
         loop {
             match pipe.read(&mut buf) {
-                Ok(0) => break,
+                Ok(0) | Err(_) => break,
                 Ok(n) => self.send_event(&Event::Output {
-                    workload_id: workload_id.clone(),
+                    workload_id: workload_id.to_owned(),
                     stream,
                     data: String::from_utf8_lossy(&buf[..n]).into_owned(),
                 }),
-                Err(_) => break,
             }
         }
     }
@@ -264,13 +262,13 @@ impl Agent {
     }
 
     /// SIGKILL a workload's process group if it ignored the earlier SIGTERM.
-    fn escalate_kill(&self, pgid: i32, workload_id: String) {
+    fn escalate_kill(&self, pgid: i32, workload_id: &str) {
         thread::sleep(STOP_GRACE);
         let still_running = self
             .workloads
             .lock()
             .unwrap()
-            .get(&workload_id)
+            .get(workload_id)
             .is_some_and(|entry| entry.result.is_none());
         if still_running {
             // SAFETY: kill with a valid signal number.

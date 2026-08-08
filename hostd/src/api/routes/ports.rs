@@ -35,7 +35,7 @@ pub(crate) fn routes() -> Router<AppState> {
 }
 
 /// List a vm's exposed ports.
-pub(crate) async fn list_exposed_ports(
+async fn list_exposed_ports(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Vec<ExposedPort>>> {
@@ -43,7 +43,7 @@ pub(crate) async fn list_exposed_ports(
 }
 
 /// Expose a guest port, with a label describing its purpose.
-pub(crate) async fn add_exposed_port(
+async fn add_exposed_port(
     State(state): State<AppState>,
     Path(id): Path<String>,
     ApiJson(port): ApiJson<ExposedPort>,
@@ -53,7 +53,7 @@ pub(crate) async fn add_exposed_port(
 }
 
 /// Remove an exposed port by port number.
-pub(crate) async fn remove_exposed_port(
+async fn remove_exposed_port(
     State(state): State<AppState>,
     Path((id, port)): Path<(String, u16)>,
 ) -> ApiResult<StatusCode> {
@@ -62,7 +62,7 @@ pub(crate) async fn remove_exposed_port(
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct MintTokenRequest {
+struct MintTokenRequest {
     /// Requested token lifetime in seconds; defaults to
     /// [`DEFAULT_TTL_SECS`] and is clamped to the proxy's maximum.
     #[serde(default)]
@@ -74,13 +74,13 @@ pub(crate) struct MintTokenRequest {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct MintTokenResponse {
+struct MintTokenResponse {
     token: String,
     expires_at: DateTime<Utc>,
 }
 
 /// Mint an ephemeral JWT authorizing proxy requests to this exposed port.
-pub(crate) async fn mint_port_token(
+async fn mint_port_token(
     State(state): State<AppState>,
     Path((id, port)): Path<(String, u16)>,
     ApiJson(body): ApiJson<MintTokenRequest>,

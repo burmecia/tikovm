@@ -92,7 +92,7 @@ impl FirecrackerVmm {
             loop {
                 interval.tick().await;
                 let now = Utc::now();
-                vmm.fire_due_schedules(last_tick, now).await;
+                vmm.fire_due_schedules(last_tick, now);
                 last_tick = now;
             }
         });
@@ -100,7 +100,7 @@ impl FirecrackerVmm {
 
     /// One scheduler tick: run every schedule VM whose cron fired inside
     /// `(last_tick, now]`.
-    async fn fire_due_schedules(self: &Arc<Self>, last_tick: DateTime<Utc>, now: DateTime<Utc>) {
+    fn fire_due_schedules(self: &Arc<Self>, last_tick: DateTime<Utc>, now: DateTime<Utc>) {
         // Collect (vm_id, parsed schedule) under the lock, then drop it
         // before spawning runs.
         let due: Vec<VmId> = {

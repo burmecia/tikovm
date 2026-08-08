@@ -71,6 +71,7 @@ pub(crate) enum WorkloadOrigin {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::struct_field_names)] // `workload_id` is the serialized JSON field name
 pub(crate) struct Workload {
     pub workload_id: WorkloadId,
     pub vm_id: VmId,

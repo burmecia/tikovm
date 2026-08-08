@@ -48,8 +48,7 @@ impl ActivityTracker {
             .lock()
             .unwrap()
             .get(vm_id)
-            .map(|a| a.in_flight)
-            .unwrap_or(0)
+            .map_or(0, |a| a.in_flight)
     }
 
     /// When the last proxied request to `vm_id` started, if any.

@@ -18,7 +18,9 @@ use super::api::FcApiClient;
 use super::vmm::FirecrackerVmm;
 
 impl FirecrackerVmm {
-    pub(super) fn spawn_fc_process(&self, instance_ref: VmInstanceRef) -> Result<process::Child> {
+    /// Spawn the Firecracker process for a VM and wait for its API socket
+    /// to appear (up to 5s). The child's stderr goes to the VM's error log.
+    pub(super) fn spawn_fc_process(&self, instance_ref: &VmInstanceRef) -> Result<process::Child> {
         let (vm_id, socket_path, error_log, vsock_uds_path) = {
             let instance = instance_ref.lock()?;
             (
@@ -68,126 +70,142 @@ impl FirecrackerVmm {
         Ok(child)
     }
 
+    /// Drive the pre-boot API setup of a freshly spawned Firecracker
+    /// process: boot source, machine config, drives, serial, vsock, network.
     pub(super) async fn configure_vm(&self, instance_ref: VmInstanceRef) -> Result<()> {
         let instance = instance_ref.lock()?.clone();
-        let vm_config = &instance.vm_config;
         let client = FcApiClient::new(&instance.socket_path);
 
-        // Configure boot source (kernel + initramfs). The guest IP is passed
-        // as a kernel `ip=` boot arg (the kernel has CONFIG_IP_PNP=y), so
-        // eth0 is configured before init runs — independent of whether the
-        // guest image's network userspace (udev/networkd) works.
-        let boot_args = match &instance.net {
-            Some(net) => format!(
-                "{} ip={}::{}:{}::eth0:off",
-                instance.boot_args,
-                net.guest_ip,
-                net.gateway_ip,
-                net.netmask()?,
-            ),
-            None => instance.boot_args.clone(),
-        };
-        let boot_source = json!({
-            "kernel_image_path": instance.kernel_path.to_string_lossy(),
-            "boot_args": boot_args,
-            "initrd_path": instance.initramfs_path.to_string_lossy(),
-        });
-        client.put("/boot-source", &boot_source).await?;
-
-        // Machine configuration.
-        client
-            .put(
-                "/machine-config",
-                &json!({
-                    "vcpu_count": vm_config.cpus,
-                    "mem_size_mib": vm_config.memory_mb,
-                    "smt": false,
-                    "track_dirty_pages": false,
-                    "huge_pages": "None",
-                }),
-            )
-            .await?;
-
-        // Configure the rootfs drive.
-        client
-            .put(
-                "/drives/rootfs",
-                &json!({
-                    "drive_id": "rootfs",
-                    "path_on_host": instance.rootfs_path.to_string_lossy(),
-                    "is_root_device": true,
-                    "is_read_only": true,
-                    "cache_type": "Unsafe",
-                    "io_engine": "Async",
-                }),
-            )
-            .await?;
+        put_boot_source(&client, &instance).await?;
+        put_machine_config(&client, &instance).await?;
+        put_drive(&client, "rootfs", &instance.rootfs_path, true).await?;
 
         // Per-VM read-write overlay disk (/dev/vdb). The initramfs mounts it
         // and uses it as the overlayfs upper/work backing store, so it only
         // needs a fresh empty ext4 filesystem sized per the VM config.
-        create_overlay_disk(&instance.overlay_disk, vm_config.disk_size_mb).await?;
+        create_overlay_disk(&instance.overlay_disk, instance.vm_config.disk_size_mb).await?;
         // Seed per-VM guest config (e.g. PostgreSQL pg_hba rules) into the
         // disk's upper layer before the drive is attached.
         seed_overlay_disk(&instance).await?;
-        client
-            .put(
-                "/drives/overlay",
-                &json!({
-                    "drive_id": "overlay",
-                    "path_on_host": instance.overlay_disk.to_string_lossy(),
-                    "is_root_device": false,
-                    "is_read_only": false,
-                    "cache_type": "Unsafe",
-                    "io_engine": "Async",
-                }),
-            )
-            .await?;
+        put_drive(&client, "overlay", &instance.overlay_disk, false).await?;
 
-        // Serial console output.
-        client
-            .put(
-                "/serial",
-                &json!({
-                    "serial_out_path": instance.serial_log.to_string_lossy(),
-                }),
-            )
-            .await?;
-
-        // Vsock device for the guestd control channel (workload execution).
-        // Firecracker creates a Unix listener at uds_path; hostd connects to
-        // it and issues `CONNECT <port>` to reach guestd inside the guest.
-        let guest_cid = instance
-            .guest_cid
-            .ok_or_else(|| Error::vmm(format!("vm {} has no vsock guest CID", instance.vm_id)))?;
-        client
-            .put(
-                "/vsock",
-                &json!({
-                    "vsock_id": "vsock0",
-                    "guest_cid": guest_cid,
-                    "uds_path": instance.vsock_uds_path.to_string_lossy(),
-                }),
-            )
-            .await?;
-
-        // Network interface backed by the VM's TAP device.
-        let vm_net = instance.net.clone().ok_or_else(|| {
-            Error::net(format!("vm {} has no network allocation", instance.vm_id))
-        })?;
-        client
-            .put(
-                "/network-interfaces/eth0",
-                &json!({
-                    "iface_id": "eth0",
-                    "guest_mac": vm_net.guest_mac,
-                    "host_dev_name": vm_net.tap_name.to_string(),
-                }),
-            )
-            .await?;
+        put_serial(&client, &instance).await?;
+        put_vsock(&client, &instance).await?;
+        put_net_iface(&client, &instance).await?;
 
         Ok(())
     }
+}
+
+/// Configure the boot source (kernel + initramfs). The guest IP is passed
+/// as a kernel `ip=` boot arg (the kernel has `CONFIG_IP_PNP=y`), so eth0 is
+/// configured before init runs — independent of whether the guest image's
+/// network userspace (udev/networkd) works.
+async fn put_boot_source(client: &FcApiClient, instance: &VmInstance) -> Result<()> {
+    let boot_args = match &instance.net {
+        Some(net) => format!(
+            "{} ip={}::{}:{}::eth0:off",
+            instance.boot_args,
+            net.guest_ip,
+            net.gateway_ip,
+            net.netmask()?,
+        ),
+        None => instance.boot_args.clone(),
+    };
+    client
+        .put(
+            "/boot-source",
+            &json!({
+                "kernel_image_path": instance.kernel_path.to_string_lossy(),
+                "boot_args": boot_args,
+                "initrd_path": instance.initramfs_path.to_string_lossy(),
+            }),
+        )
+        .await
+}
+
+/// Machine configuration (vCPUs, memory).
+async fn put_machine_config(client: &FcApiClient, instance: &VmInstance) -> Result<()> {
+    let vm_config = &instance.vm_config;
+    client
+        .put(
+            "/machine-config",
+            &json!({
+                "vcpu_count": vm_config.cpus,
+                "mem_size_mib": vm_config.memory_mb,
+                "smt": false,
+                "track_dirty_pages": false,
+                "huge_pages": "None",
+            }),
+        )
+        .await
+}
+
+/// Attach a drive. The root device is the shared read-only base image; the
+/// overlay drive is the per-VM writable disk.
+async fn put_drive(client: &FcApiClient, drive_id: &str, path: &Path, is_root: bool) -> Result<()> {
+    client
+        .put(
+            &format!("/drives/{drive_id}"),
+            &json!({
+                "drive_id": drive_id,
+                "path_on_host": path.to_string_lossy(),
+                "is_root_device": is_root,
+                "is_read_only": is_root,
+                "cache_type": "Unsafe",
+                "io_engine": "Async",
+            }),
+        )
+        .await
+}
+
+/// Serial console output, written to the VM's serial log on the host.
+async fn put_serial(client: &FcApiClient, instance: &VmInstance) -> Result<()> {
+    client
+        .put(
+            "/serial",
+            &json!({
+                "serial_out_path": instance.serial_log.to_string_lossy(),
+            }),
+        )
+        .await
+}
+
+/// Vsock device for the guestd control channel (workload execution).
+/// Firecracker creates a Unix listener at `uds_path`; hostd connects to it
+/// and issues `CONNECT <port>` to reach guestd inside the guest.
+async fn put_vsock(client: &FcApiClient, instance: &VmInstance) -> Result<()> {
+    let guest_cid = instance
+        .guest_cid
+        .ok_or_else(|| Error::vmm(format!("vm {} has no vsock guest CID", instance.vm_id)))?;
+    client
+        .put(
+            "/vsock",
+            &json!({
+                "vsock_id": "vsock0",
+                "guest_cid": guest_cid,
+                "uds_path": instance.vsock_uds_path.to_string_lossy(),
+            }),
+        )
+        .await
+}
+
+/// Network interface backed by the VM's TAP device.
+async fn put_net_iface(client: &FcApiClient, instance: &VmInstance) -> Result<()> {
+    let vm_net = instance
+        .net
+        .clone()
+        .ok_or_else(|| Error::net(format!("vm {} has no network allocation", instance.vm_id)))?;
+    client
+        .put(
+            "/network-interfaces/eth0",
+            &json!({
+                "iface_id": "eth0",
+                "guest_mac": vm_net.guest_mac,
+                "host_dev_name": vm_net.tap_name.to_string(),
+            }),
+        )
+        .await
 }
 
 /// Create a fresh ext4 disk image of `size_mb` at `path` for the VM's
@@ -218,17 +236,17 @@ async fn create_overlay_disk(path: &Path, size_mb: u32) -> Result<()> {
 /// Seed per-VM guest configuration into the overlay disk's upper layer.
 ///
 /// The overlay disk is a fresh ext4 whose `upper/` tree shadows the shared
-/// read-only base image via overlayfs (see scripts/initramfs_init.sh), so
+/// read-only base image via overlayfs (see `scripts/initramfs_init.sh`), so
 /// files written here before the first boot are how hostd injects per-VM
 /// config the base image cannot hardcode. The disk is loop-mounted, seeded,
 /// and unmounted again before Firecracker attaches it.
 ///
-/// Today this only handles PostgreSQL images: a pg_hba rule scoped to the
+/// Today this only handles `PostgreSQL` images: a `pg_hba` rule scoped to the
 /// VM's project subnet, so the cluster (the base image makes it listen on
 /// all interfaces) accepts password connections from the host's bridge IP
 /// and sibling VMs in the same project — and from nowhere else. The base
-/// image's pg_hba.conf pulls the rule in via
-/// `include_dir '/etc/postgresql/16/main/pg_hba.d'` (needs PostgreSQL 16).
+/// image's `pg_hba.conf` pulls the rule in via
+/// `include_dir '/etc/postgresql/16/main/pg_hba.d'` (needs `PostgreSQL` 16).
 async fn seed_overlay_disk(instance: &VmInstance) -> Result<()> {
     if instance.vm_config.image != "postgres-16" {
         return Ok(());
@@ -241,16 +259,9 @@ async fn seed_overlay_disk(instance: &VmInstance) -> Result<()> {
     let mount_point = instance.work_dir.join("seed.mnt");
     fs::create_dir_all(&mount_point)?;
 
-    run_tool(
-        "mount",
-        &[
-            "-o".into(),
-            "loop".into(),
-            instance.overlay_disk.to_string_lossy().into_owned(),
-            mount_point.to_string_lossy().into_owned(),
-        ],
-    )
-    .await?;
+    let disk = instance.overlay_disk.to_string_lossy();
+    let mnt = mount_point.to_string_lossy();
+    run_tool("mount", &["-o", "loop", disk.as_ref(), mnt.as_ref()]).await?;
 
     // Unmount no matter how the seeding itself fares; a disk left mounted
     // would still be attached to the VM, with hostd's mount leaking.
@@ -270,8 +281,7 @@ async fn seed_overlay_disk(instance: &VmInstance) -> Result<()> {
     }
     .await;
 
-    let umount_result =
-        run_tool("umount", &[mount_point.to_string_lossy().into_owned()]).await;
+    let umount_result = run_tool("umount", &[mnt.as_ref()]).await;
     let _ = fs::remove_dir(&mount_point);
 
     seed_result?;
@@ -279,7 +289,7 @@ async fn seed_overlay_disk(instance: &VmInstance) -> Result<()> {
 }
 
 /// Run a root-requiring host tool (mount/umount) and check its exit status.
-async fn run_tool(tool: &str, args: &[String]) -> Result<()> {
+async fn run_tool(tool: &str, args: &[&str]) -> Result<()> {
     let status = process::Command::new(tool)
         .args(args)
         .stdout(Stdio::null())
@@ -293,6 +303,8 @@ async fn run_tool(tool: &str, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Locate a binary: the `env_var` override wins, then a PATH search, then
+/// the bare name (left for the OS to resolve at spawn time).
 pub(super) fn from_path_or_env(binary: &str, env_var: &str) -> PathBuf {
     if let Some(path) = env::var_os(env_var) {
         return PathBuf::from(path);

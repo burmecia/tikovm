@@ -1,6 +1,6 @@
 //! Host-side network effects: bridges, TAP devices, iptables NAT/FORWARD
-//! rules and ip_forward. Everything here is idempotent (check before create,
-//! ignore "not found" on delete) and needs root / CAP_NET_ADMIN.
+//! rules and `ip_forward`. Everything here is idempotent (check before create,
+//! ignore "not found" on delete) and needs root / `CAP_NET_ADMIN`.
 
 use std::fs;
 use std::process::Command;
@@ -30,8 +30,7 @@ fn link_exists(name: &str) -> bool {
     Command::new("ip")
         .args(["link", "show", "dev", name])
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Names of existing bridges with our prefix (for startup reconciliation).
@@ -79,103 +78,88 @@ pub(super) fn ensure_bridge(setup: &ProjectSetup) -> Result<()> {
     // Remove any legacy unrestricted rule first: hostd versions before the
     // supernet exclusion installed `-s <subnet> -j MASQUERADE`, which would
     // otherwise shadow the narrowed rule (and leak at teardown).
-    iptables_remove(&[
-        "-t",
-        "nat",
-        "-D",
-        "POSTROUTING",
-        "-s",
-        &setup.subnet.to_string(),
-        "-j",
-        "MASQUERADE",
-    ]);
-    iptables_ensure(&[
-        "-t",
-        "nat",
-        "-A",
-        "POSTROUTING",
-        "-s",
-        &setup.subnet.to_string(),
-        "!",
-        "-d",
-        &setup.supernet.to_string(),
-        "-j",
-        "MASQUERADE",
-    ])?;
-    iptables_ensure(&[
-        "-A",
-        "FORWARD",
-        "-s",
-        &setup.subnet.to_string(),
-        "-j",
-        "ACCEPT",
-    ])?;
-    iptables_ensure(&[
-        "-A",
-        "FORWARD",
-        "-d",
-        &setup.subnet.to_string(),
-        "-m",
-        "conntrack",
-        "--ctstate",
-        "RELATED,ESTABLISHED",
-        "-j",
-        "ACCEPT",
-    ])?;
+    iptables_remove(&str_refs(&legacy_masq_rule(setup)));
+    for rule in nat_rules(setup, "-A") {
+        iptables_ensure(&str_refs(&rule))?;
+    }
     Ok(())
 }
 
 pub(super) fn delete_bridge(setup: &ProjectSetup) -> Result<()> {
-    iptables_remove(&[
-        "-t",
-        "nat",
-        "-D",
-        "POSTROUTING",
-        "-s",
-        &setup.subnet.to_string(),
-        "!",
-        "-d",
-        &setup.supernet.to_string(),
-        "-j",
-        "MASQUERADE",
-    ]);
+    for rule in nat_rules(setup, "-D") {
+        iptables_remove(&str_refs(&rule));
+    }
     // Also try the pre-supernet-exclusion form, in case a bridge created by
     // an older hostd is being torn down.
-    iptables_remove(&[
-        "-t",
-        "nat",
-        "-D",
-        "POSTROUTING",
-        "-s",
-        &setup.subnet.to_string(),
-        "-j",
-        "MASQUERADE",
-    ]);
-    iptables_remove(&[
-        "-D",
-        "FORWARD",
-        "-s",
-        &setup.subnet.to_string(),
-        "-j",
-        "ACCEPT",
-    ]);
-    iptables_remove(&[
-        "-D",
-        "FORWARD",
-        "-d",
-        &setup.subnet.to_string(),
-        "-m",
-        "conntrack",
-        "--ctstate",
-        "RELATED,ESTABLISHED",
-        "-j",
-        "ACCEPT",
-    ]);
+    iptables_remove(&str_refs(&legacy_masq_rule(setup)));
     if link_exists(&setup.bridge) {
         run_cmd("ip", &["link", "set", &setup.bridge, "down"])?;
         run_cmd("ip", &["link", "del", &setup.bridge])?;
     }
     Ok(())
+}
+
+/// Borrowed view of a built rule, for the `&[&str]`-taking runners.
+fn str_refs(rule: &[String]) -> Vec<&str> {
+    rule.iter().map(String::as_str).collect()
+}
+
+/// The iptables rules wiring up a project bridge, with `verb` (`-A` or
+/// `-D`) spliced in: egress NAT for the subnet excluding the supernet, plus
+/// the two FORWARD accepts. Shared by `ensure_bridge` and `delete_bridge`
+/// so the two can never drift apart.
+fn nat_rules(setup: &ProjectSetup, verb: &str) -> [Vec<String>; 3] {
+    let subnet = setup.subnet.to_string();
+    [
+        vec![
+            "-t".into(),
+            "nat".into(),
+            verb.into(),
+            "POSTROUTING".into(),
+            "-s".into(),
+            subnet.clone(),
+            "!".into(),
+            "-d".into(),
+            setup.supernet.to_string(),
+            "-j".into(),
+            "MASQUERADE".into(),
+        ],
+        vec![
+            verb.into(),
+            "FORWARD".into(),
+            "-s".into(),
+            subnet.clone(),
+            "-j".into(),
+            "ACCEPT".into(),
+        ],
+        vec![
+            verb.into(),
+            "FORWARD".into(),
+            "-d".into(),
+            subnet,
+            "-m".into(),
+            "conntrack".into(),
+            "--ctstate".into(),
+            "RELATED,ESTABLISHED".into(),
+            "-j".into(),
+            "ACCEPT".into(),
+        ],
+    ]
+}
+
+/// The legacy pre-supernet-exclusion MASQUERADE rule, in delete form: only
+/// ever removed (by both `ensure_bridge` and `delete_bridge`), never added.
+fn legacy_masq_rule(setup: &ProjectSetup) -> Vec<String> {
+    vec![
+        "-t".into(),
+        "nat".into(),
+        "-D".into(),
+        "POSTROUTING".into(),
+        "-s".into(),
+        setup.subnet.to_string(),
+        "-j".into(),
+        "MASQUERADE".into(),
+    ]
 }
 
 pub(super) fn ensure_tap(tap: &TapName, bridge: &str) -> Result<()> {
@@ -205,8 +189,7 @@ fn iptables_ensure(args: &[&str]) -> Result<()> {
     let exists = Command::new("iptables")
         .args(&check)
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+        .is_ok_and(|o| o.status.success());
     if !exists {
         run_cmd("iptables", args)?;
     }
@@ -220,10 +203,7 @@ fn iptables_remove(args: &[&str]) {
 
 fn ensure_ip_forward() -> Result<()> {
     const PATH: &str = "/proc/sys/net/ipv4/ip_forward";
-    if fs::read_to_string(PATH)
-        .map(|s| s.trim() == "1")
-        .unwrap_or(false)
-    {
+    if fs::read_to_string(PATH).is_ok_and(|s| s.trim() == "1") {
         return Ok(());
     }
     fs::write(PATH, "1")?;

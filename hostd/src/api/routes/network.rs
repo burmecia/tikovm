@@ -1,3 +1,8 @@
+//! Stub network routes: wired into the router so the paths exist, but the
+//! handlers are placeholders — `get_network` returns the default config
+//! regardless of the VM and `update_network` echoes the payload without
+//! persisting anything.
+
 use axum::{Json, Router, extract::Path, routing::get};
 
 use crate::{
@@ -11,13 +16,13 @@ pub(crate) fn routes() -> Router<AppState> {
 }
 
 /// Stub: get the network config for a vm.
-pub(crate) async fn get_network(Path(vm_id): Path<String>) -> Json<NetworkConfig> {
+async fn get_network(Path(vm_id): Path<String>) -> Json<NetworkConfig> {
     tracing::debug!(%vm_id, "get_network stub called");
     Json(NetworkConfig::default())
 }
 
 /// Stub: update the network config for a vm.
-pub(crate) async fn update_network(
+async fn update_network(
     Path(vm_id): Path<String>,
     ApiJson(payload): ApiJson<NetworkConfig>,
 ) -> Json<NetworkConfig> {

@@ -2,7 +2,7 @@ use axum::{
     Router,
     body::Body,
     extract::State,
-    http::{Request, StatusCode, header::AUTHORIZATION},
+    http::{Request, StatusCode},
     middleware::{self, Next},
     response::Response,
     routing::get,
@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 
 use crate::error::{Error, Result};
-use crate::proxy::ProxyTokens;
+use crate::proxy::{ProxyTokens, bearer_token};
 use crate::vmm::Vmm;
 
 use super::error::ApiError;
@@ -20,13 +20,7 @@ use super::routes::{health::health, vm};
 // The environment variable name for the API token.
 const API_TOKEN_ENV_VAR: &str = "TIKOVM_HOSTD_API_TOKEN";
 
-#[derive(Clone)]
-struct AuthState {
-    token: Arc<str>,
-}
-
 /// Shared application state, made available to route handlers.
-/// Add further shared state fields here as needed.
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) vmm: Arc<dyn Vmm>,
@@ -56,14 +50,10 @@ impl ApiServer {
     pub(crate) async fn run(&self, addr: &str) -> Result<()> {
         let listener = tokio::net::TcpListener::bind(addr).await?;
 
-        let auth_state = AuthState {
-            token: self.token.clone(),
-        };
-
         let app = Router::new()
             .nest("/api", self.api_routes())
             .layer(middleware::from_fn_with_state(
-                auth_state,
+                self.token.clone(),
                 require_bearer_token,
             ))
             .layer(TraceLayer::new_for_http());
@@ -87,16 +77,12 @@ impl ApiServer {
 }
 
 async fn require_bearer_token(
-    State(state): State<AuthState>,
+    State(expected): State<Arc<str>>,
     request: Request<Body>,
     next: Next,
 ) -> std::result::Result<Response, ApiError> {
-    let authorized = request
-        .headers()
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|token| constant_time_eq(token.as_bytes(), state.token.as_bytes()));
+    let authorized = bearer_token(request.headers())
+        .is_some_and(|token| constant_time_eq(token.as_bytes(), expected.as_bytes()));
 
     if !authorized {
         return Err(ApiError::new(

@@ -10,7 +10,7 @@ use tracing::warn;
 
 use super::cidr::Ipv4Net;
 use super::host;
-use super::state::{NetState, ProjectSetup};
+use super::state::{AllocPlan, NetState, ProjectSetup};
 use super::types::{TapName, VmNet};
 use crate::error::{Error, Result};
 use crate::vmm::vm::VmId;
@@ -65,16 +65,11 @@ impl NetworkManager {
             project_id,
             vm_id,
             tap_name,
-            &self.supernet,
+            self.supernet,
             self.subnet_prefix,
         )?;
 
-        let applied = (|| -> Result<()> {
-            if let Some(setup) = &plan.setup {
-                host::ensure_bridge(setup)?;
-            }
-            host::ensure_tap(&plan.vm_net.tap_name, &plan.bridge)
-        })();
+        let applied = apply_alloc(&plan);
 
         if let Err(e) = applied {
             let _ = host::delete_tap(&plan.vm_net.tap_name);
@@ -96,7 +91,7 @@ impl NetworkManager {
     /// proceed.
     pub(crate) fn release(&self, vm_id: &VmId) -> Result<()> {
         let mut state = self.state.lock()?;
-        let Some(plan) = state.release(vm_id, &self.supernet, self.subnet_prefix) else {
+        let Some(plan) = state.release(vm_id, self.supernet, self.subnet_prefix) else {
             return Ok(());
         };
 
@@ -122,7 +117,7 @@ impl NetworkManager {
 
         for project in state.projects.values() {
             for vm_id in project.vms.values() {
-                let tap = TapName::from(&VmId::from(vm_id.as_str()));
+                let tap = TapName::for_vm(vm_id);
                 if let Err(e) = host::delete_tap(&tap) {
                     warn!(tap = %tap, error = %e, "reconcile: failed to delete TAP");
                 }
@@ -152,6 +147,15 @@ impl NetworkManager {
         persist(&self.state_path, &state)?;
         Ok(())
     }
+}
+
+/// Apply an `AllocPlan` on the host: bridge + subnet + NAT when this VM is
+/// the project's first, then the VM's TAP device.
+fn apply_alloc(plan: &AllocPlan) -> Result<()> {
+    if let Some(setup) = &plan.setup {
+        host::ensure_bridge(setup)?;
+    }
+    host::ensure_tap(&plan.vm_net.tap_name, &plan.bridge)
 }
 
 fn persist(path: &Path, state: &NetState) -> Result<()> {

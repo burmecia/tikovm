@@ -1,5 +1,6 @@
 mod api;
 mod guest;
+mod schedule;
 mod setup;
 mod vmm;
 mod vsock;

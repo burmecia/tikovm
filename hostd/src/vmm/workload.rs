@@ -60,12 +60,26 @@ pub(crate) enum WorkloadState {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WorkloadOrigin {
+    /// Started through the API (workloads/exec routes).
+    #[default]
+    Api,
+    /// Started by the cron scheduler of a `VmMode::Schedule` VM.
+    Schedule,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Workload {
     pub workload_id: WorkloadId,
     pub vm_id: VmId,
     pub spec: WorkloadSpec,
     pub state: WorkloadState,
+    /// What started this workload (API call vs. cron scheduler); lets run
+    /// history distinguish scheduled runs from manual exec.
+    #[serde(default)]
+    pub origin: WorkloadOrigin,
     /// Pid of the process inside the guest, set once guestd confirms the
     /// spawn (matches the `pid` of guestd's `started` event).
     pub pid: Option<u32>,
@@ -88,6 +102,7 @@ impl Workload {
             vm_id: vm_id.clone(),
             spec,
             state: WorkloadState::Starting,
+            origin: WorkloadOrigin::default(),
             pid: None,
             exit_code: None,
             signal: None,

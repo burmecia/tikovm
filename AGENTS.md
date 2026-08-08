@@ -58,7 +58,8 @@ hostd/
                       vmm.rs (FirecrackerVmm + auto-suspend gate/loops),
                       setup.rs (spawn + pre-boot API
                       config + overlay-disk seeding), api.rs (Firecracker API
-                      socket client),
+                      socket client), schedule.rs (cron scheduler for
+                      schedule-mode VMs),
                       vsock.rs (channel to guestd), guest.rs
 guestd/
   src/main.rs         vsock accept loop, one thread per host connection
@@ -86,7 +87,8 @@ assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext
 
 - Rust, edition 2024, `rust-version = 1.96`; tokio ("full"), axum 0.8,
   tower-http, hyper + hyper-util + http-body-util (the proxy), jsonwebtoken,
-  serde/serde_json, clap (derive), tracing, thiserror.
+  serde/serde_json, clap (derive), tracing, thiserror, cron (the
+  schedule-mode cron expressions, UTC).
 - Firecracker is an **external binary**, located via the `FIRECRACKER_BIN`
   env var or found on PATH (`vmm/firecracker/setup.rs` `from_path_or_env`).
 - Boot chain per VM: Firecracker boots `assets/vmlinux-*.bin` with
@@ -169,6 +171,21 @@ assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext
   `idle_check_cmd` to it for postgres-16 VMs that set `auto_suspend`
   without an explicit command. Non-`permanent` VMs with `auto_suspend`
   are rejected at create time.
+- Schedule mode: a VM created with `mode: "schedule"` plus `cmd` and
+  `cron_schedule` (validated at create time; rejected for other modes, as
+  are `cmd`-less/cron-less schedule VMs) is not started on creation. A cron
+  scheduler loop (`vmm/firecracker/schedule.rs`, spawned from
+  `start_background_tasks`, 5s tick) matches fires in the (last tick, now]
+  window — expressions are UTC, standard 5-field cron gets a `0` seconds
+  field prepended, 6/7-field expressions are taken as-is. Each fire runs
+  wake (`ensure_started` or `start_vm`) → `start_workload` with the
+  configured `cmd`/`env` → `snapshot_vm`, so the VM idles as `Suspended`
+  with no Firecracker process between runs. Overlap is impossible (per-VM
+  try-lock skips a fire while a run is active, never queues); an optional
+  `timeout_secs` stops an overrunning workload before suspending. Every run
+  is a regular `Workload` tagged `origin: "schedule"`, so run history and
+  logs are served by the existing workloads API — there is no separate
+  schedule-run store. Missed fires while hostd was down are not caught up.
 
 ## Build, run, and test commands
 
@@ -202,12 +219,13 @@ There are no Rust integration tests and no CI configuration. Testing is:
    defaults (`vmm/vm.rs`), and guestd's idle-check runner
    (`guestd/src/monitor.rs`).
    Add tests in the same `#[cfg(test)] mod tests` style when touching pure
-   logic.
+   logic. The cron parser of the schedule mode
+   (`vmm/firecracker/schedule.rs`) is unit-tested the same way.
 2. **End-to-end** — `tests/run_all.sh` requires root/KVM and a
    Firecracker binary. It runs the self-contained `tests/test_*.sh` files
    (vm_lifecycle, pause_resume, snapshot_restore, workloads, exec,
    networking, ports, proxy, proxy_tcp, postgres_auto_suspend,
-   auto_suspend),
+   auto_suspend, schedule),
    each of which starts hostd via `run_hostd.sh` and exercises its slice of
    the API surface with curl/jq: VM create/get/list/delete, pause/
    resume, snapshot/restore, workload run/stop/logs, per-project bridge and

@@ -12,7 +12,7 @@ use crate::{
         server::AppState,
     },
     error::Error,
-    vmm::vm::{VmConfig, VmId, VmInstance, VmSnapshot},
+    vmm::vm::{VmConfig, VmId, VmInstance, VmMode, VmSnapshot},
 };
 
 use super::{exec, network, ports, workload};
@@ -32,13 +32,17 @@ pub(crate) fn routes() -> Router<AppState> {
         .nest("/{id}/workloads", workload::routes())
 }
 
-/// Stub: create a new vm.
+/// Create a new vm and start it — except schedule VMs, which stay `Created`
+/// until the cron scheduler wakes them for their first fire (no point
+/// idling from creation to a possibly far-off schedule).
 pub(crate) async fn create_vm(
     State(state): State<AppState>,
     ApiJson(payload): ApiJson<VmConfig>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     let vm_id = state.vmm.create_vm(&payload).await?;
-    state.vmm.start_vm(&vm_id).await?;
+    if payload.mode != VmMode::Schedule {
+        state.vmm.start_vm(&vm_id).await?;
+    }
     Ok((
         StatusCode::CREATED,
         Json(json!({ "status": "created", "payload": payload, "id": vm_id })),

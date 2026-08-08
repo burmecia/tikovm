@@ -90,6 +90,9 @@ pub(crate) struct FirecrackerVmm {
     /// auto-suspend cooldown and HTTP idle timer are measured from here.
     wake_times: Mutex<HashMap<VmId, Instant>>,
 
+    /// Per-VM locks deduplicating scheduled runs (see `schedule` module).
+    pub(super) schedule_run_locks: super::schedule::ScheduleRunLocks,
+
     /// Weak self-reference (set by `start_background_tasks`) so lifecycle
     /// methods can spawn tasks that need `Arc<Self>`.
     self_ref: Mutex<Option<Weak<FirecrackerVmm>>>,
@@ -116,6 +119,7 @@ impl FirecrackerVmm {
             auto_suspend_rx: Mutex::new(Some(auto_suspend_rx)),
             wake_locks: Mutex::new(HashMap::new()),
             wake_times: Mutex::new(HashMap::new()),
+            schedule_run_locks: super::schedule::ScheduleRunLocks::default(),
             self_ref: Mutex::new(None),
         })
     }
@@ -134,8 +138,8 @@ impl FirecrackerVmm {
 /// Both paths pass through the same gate, so the final decision is always
 /// hostd's.
 impl FirecrackerVmm {
-    /// Spawn the auto-suspend background loops. Must be called once after
-    /// the VMM is wrapped in an `Arc`.
+    /// Spawn the background loops (auto-suspend detectors and the cron
+    /// scheduler). Must be called once after the VMM is wrapped in an `Arc`.
     pub(crate) fn start_background_tasks(self: &Arc<Self>) {
         *self.self_ref.lock().unwrap() = Some(Arc::downgrade(self));
 
@@ -156,6 +160,8 @@ impl FirecrackerVmm {
                 vmm.check_http_idle_vms().await;
             }
         });
+
+        self.spawn_scheduler();
     }
 
     /// HTTP idle detector: suspend VMs with exposed ports that have seen no
@@ -299,6 +305,23 @@ impl Vmm for FirecrackerVmm {
         if config.auto_suspend.is_some() && config.mode != VmMode::Permanent {
             return Err(Error::vmm(
                 "auto_suspend is only supported for permanent VMs",
+            ));
+        }
+
+        // Schedule-mode validation: the scheduler needs a cmd to run and a
+        // parseable cron expression; the schedule-only fields are rejected
+        // for other modes so a typo can't silently misconfigure a VM.
+        if config.mode == VmMode::Schedule {
+            if config.cmd.is_empty() {
+                return Err(Error::vmm("schedule VMs require a non-empty cmd"));
+            }
+            let Some(cron_schedule) = &config.cron_schedule else {
+                return Err(Error::vmm("schedule VMs require a cron_schedule"));
+            };
+            super::schedule::parse_cron_schedule(cron_schedule)?;
+        } else if config.cron_schedule.is_some() || config.timeout_secs.is_some() {
+            return Err(Error::vmm(
+                "cron_schedule and timeout_secs are only supported for schedule VMs",
             ));
         }
 
@@ -813,6 +836,7 @@ impl Vmm for FirecrackerVmm {
         self.wake_times.lock()?.remove(vm_id);
         self.wake_locks.lock()?.remove(vm_id);
         self.activity.clear(vm_id);
+        self.schedule_run_locks.remove(vm_id)?;
 
         info!(vm_id = %vm_id, "VM destroyed");
 

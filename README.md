@@ -44,3 +44,22 @@ in-flight proxied requests, post-wake cooldown) before the snapshot happens.
 
 `idle_check_cmd` may be empty (HTTP-only), and a VM with neither exposed
 ports nor a check command never suspends.
+
+Schedule mode: a VM created with `"mode": "schedule"`, a `cmd`, and a
+`cron_schedule` (UTC; standard 5-field cron or 6/7 fields with seconds) is
+not started on creation. hostd's cron scheduler wakes it on every fire
+(start, or restore from its snapshot), runs `cmd` as a workload, then
+snapshots it back to `suspended` — so between runs it consumes no CPU or
+memory, only the snapshot files on disk. An optional `timeout_secs` stops a
+run that overruns (SIGTERM, then SIGKILL in the guest); a fire arriving
+while the previous run is still active is skipped, never queued. Each run
+is a regular workload tagged `"origin": "schedule"`, so run history and
+captured logs are queryable through the workloads API
+(`GET /api/vms/{id}/workloads[/{workload_id}/logs]`):
+
+```json
+"mode": "schedule",
+"cmd": ["sh", "-c", "/usr/local/bin/nightly-job"],
+"cron_schedule": "0 3 * * *",
+"timeout_secs": 3600
+```

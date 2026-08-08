@@ -196,12 +196,23 @@ pub(crate) struct VmConfig {
     pub ssh_access: bool,
     #[serde(default)]
     pub env: Vec<EnvVar>,
+    /// Schedule-mode command: run inside the guest on every cron fire (the
+    /// VM is woken for the run and suspended again afterwards). Required for
+    /// `VmMode::Schedule`, rejected for other modes.
     #[serde(default)]
     pub cmd: Vec<String>,
     #[serde(default)]
     pub services: Vec<String>,
+    /// Schedule-mode cron expression (UTC). Standard 5-field cron and
+    /// 6/7-field expressions with a seconds field are both accepted.
+    /// Required for `VmMode::Schedule`, rejected for other modes.
     #[serde(default)]
     pub cron_schedule: Option<String>,
+    /// Schedule-mode run timeout: if a scheduled `cmd` is still running this
+    /// many seconds after it started, hostd stops it (SIGTERM, then SIGKILL
+    /// in the guest) and suspends the VM anyway. Unset means no timeout.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
     #[serde(default)]
     pub tags: Vec<String>,
     /// Auto-suspend policy; only valid for `VmMode::Permanent` VMs
@@ -355,5 +366,40 @@ mod tests {
         assert_eq!(auto_suspend.idle_timeout_secs, 60);
         assert_eq!(auto_suspend.idle_check_cmd, vec!["/check".to_string()]);
         assert_eq!(auto_suspend.check_interval_secs, 5);
+    }
+
+    #[test]
+    fn vm_config_schedule_defaults() {
+        let config: VmConfig = serde_json::from_str(
+            r#"{"name":"vm","project_id":1,"mode":"schedule","image":"ubuntu-24",
+                "cpus":1,"memory_mb":256,"disk_size_mb":1024,
+                "network_config":{"allow_internet":false,"exposed_ports":[]},"ssh_access":false}"#,
+        )
+        .unwrap();
+        assert_eq!(config.mode, VmMode::Schedule);
+        assert!(config.cmd.is_empty());
+        assert!(config.cron_schedule.is_none());
+        assert!(config.timeout_secs.is_none());
+    }
+
+    #[test]
+    fn vm_config_schedule_round_trip() {
+        let config: VmConfig = serde_json::from_str(
+            r#"{"name":"vm","project_id":1,"mode":"schedule","image":"ubuntu-24",
+                "cpus":1,"memory_mb":256,"disk_size_mb":1024,
+                "network_config":{"allow_internet":false,"exposed_ports":[]},"ssh_access":false,
+                "cmd":["/run.sh"],"cron_schedule":"*/5 * * * *","timeout_secs":120}"#,
+        )
+        .unwrap();
+        assert_eq!(config.cmd, vec!["/run.sh".to_string()]);
+        assert_eq!(config.cron_schedule.as_deref(), Some("*/5 * * * *"));
+        assert_eq!(config.timeout_secs, Some(120));
+
+        let json = serde_json::to_string(&config).unwrap();
+        let back: VmConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.mode, VmMode::Schedule);
+        assert_eq!(back.cmd, config.cmd);
+        assert_eq!(back.cron_schedule, config.cron_schedule);
+        assert_eq!(back.timeout_secs, config.timeout_secs);
     }
 }

@@ -53,7 +53,7 @@ echo "VM ${VM_ID} snapshotted and suspended (Firecracker process stopped)"
 
 # Snapshotting an already-suspended VM must fail with the uniform JSON error
 SNAP_AGAIN_RAW="$(api_raw POST "/api/vms/${VM_ID}/snapshot")"
-expect_error_code "${SNAP_AGAIN_RAW}" "500"
+expect_error_code "${SNAP_AGAIN_RAW}" "409"
 echo "Second snapshot returned expected error: $(api_body "${SNAP_AGAIN_RAW}")"
 
 # Restore the VM from its snapshot, expecting it back in started/running
@@ -71,7 +71,7 @@ echo "VM ${VM_ID} restored from snapshot (Firecracker reports Running)"
 
 # Restoring a VM that is not suspended must fail with the uniform JSON error
 RESTORE_AGAIN_RAW="$(api_raw POST "/api/vms/${VM_ID}/restore")"
-expect_error_code "${RESTORE_AGAIN_RAW}" "500"
+expect_error_code "${RESTORE_AGAIN_RAW}" "409"
 echo "Second restore returned expected error: $(api_body "${RESTORE_AGAIN_RAW}")"
 
 printf '\nSnapshot/restore test passed. ✅\n\n'

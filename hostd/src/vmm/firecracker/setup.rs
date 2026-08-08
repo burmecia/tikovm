@@ -20,7 +20,10 @@ use super::vmm::FirecrackerVmm;
 impl FirecrackerVmm {
     /// Spawn the Firecracker process for a VM and wait for its API socket
     /// to appear (up to 5s). The child's stderr goes to the VM's error log.
-    pub(super) fn spawn_fc_process(&self, instance_ref: &VmInstanceRef) -> Result<process::Child> {
+    pub(super) async fn spawn_fc_process(
+        &self,
+        instance_ref: &VmInstanceRef,
+    ) -> Result<process::Child> {
         let (vm_id, socket_path, error_log, vsock_uds_path) = {
             let instance = instance_ref.lock()?;
             (
@@ -62,7 +65,7 @@ impl FirecrackerVmm {
                     socket_path.display()
                 )));
             }
-            std::thread::sleep(Duration::from_millis(50));
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
         info!(vm_id = %vm_id, "Firecracker process spawned");
@@ -108,7 +111,7 @@ async fn put_boot_source(client: &FcApiClient, instance: &VmInstance) -> Result<
             instance.boot_args,
             net.guest_ip,
             net.gateway_ip,
-            net.netmask()?,
+            net.netmask(),
         ),
         None => instance.boot_args.clone(),
     };
@@ -254,7 +257,7 @@ async fn seed_overlay_disk(instance: &VmInstance) -> Result<()> {
     let net = instance
         .net
         .as_ref()
-        .ok_or_else(|| Error::vmm(format!("vm {} has no network allocation", instance.vm_id)))?;
+        .ok_or_else(|| Error::net(format!("vm {} has no network allocation", instance.vm_id)))?;
 
     let mount_point = instance.work_dir.join("seed.mnt");
     fs::create_dir_all(&mount_point)?;

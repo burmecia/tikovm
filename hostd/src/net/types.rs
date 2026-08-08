@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::vmm::vm::VmId;
 
+use super::cidr::Ipv4Net;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub(crate) struct TapName(pub String);
@@ -105,8 +107,8 @@ pub(crate) struct VmNet {
     pub tap_name: TapName,
     pub guest_ip: IpAddr,
     pub gateway_ip: IpAddr,
-    // NAT subnet in CIDR notation, e.g. `172.16.5.0/24`.
-    pub subnet: String,
+    /// NAT subnet of the VM's project, e.g. `172.16.5.0/24`.
+    pub subnet: Ipv4Net,
     // Guest MAC, e.g. `AA:FC:00:00:00:07`.
     pub guest_mac: String,
 }
@@ -116,7 +118,7 @@ impl VmNet {
         tap_name: TapName,
         guest_ip: Ipv4Addr,
         gateway_ip: Ipv4Addr,
-        subnet: String,
+        subnet: Ipv4Net,
     ) -> Self {
         Self {
             tap_name,
@@ -127,26 +129,9 @@ impl VmNet {
         }
     }
 
-    /// Prefix length of the subnet CIDR, e.g. 24 for `172.16.5.0/24`.
-    pub(crate) fn prefix_len(&self) -> Result<u8> {
-        self.subnet
-            .split_once('/')
-            .and_then(|(_, prefix)| prefix.parse().ok())
-            .ok_or_else(|| Error::net(format!("invalid subnet CIDR {:?}", self.subnet)))
-    }
-
     /// Dotted netmask of the subnet, e.g. `255.255.255.0` for a /24.
-    pub(crate) fn netmask(&self) -> Result<Ipv4Addr> {
-        let prefix = self.prefix_len()?;
-        if prefix > 32 {
-            return Err(Error::net(format!("invalid subnet CIDR {:?}", self.subnet)));
-        }
-        let mask = if prefix == 0 {
-            0
-        } else {
-            u32::MAX << (32 - prefix)
-        };
-        Ok(Ipv4Addr::from(mask))
+    pub(crate) fn netmask(&self) -> Ipv4Addr {
+        self.subnet.netmask()
     }
 }
 

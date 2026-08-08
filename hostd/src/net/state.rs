@@ -97,12 +97,7 @@ impl NetState {
             return Ok(AllocPlan {
                 bridge: project.bridge.clone(),
                 setup: None,
-                vm_net: VmNet::new(
-                    tap_name.clone(),
-                    guest_ip,
-                    project.gateway,
-                    subnet.to_string(),
-                ),
+                vm_net: VmNet::new(tap_name.clone(), guest_ip, project.gateway, subnet),
             });
         }
 
@@ -142,7 +137,7 @@ impl NetState {
                 supernet,
             }),
             bridge,
-            vm_net: VmNet::new(tap_name.clone(), guest_ip, gateway, subnet.to_string()),
+            vm_net: VmNet::new(tap_name.clone(), guest_ip, gateway, subnet),
         })
     }
 
@@ -235,7 +230,7 @@ mod tests {
             plan.vm_net.gateway_ip,
             "172.16.0.1".parse::<std::net::IpAddr>().unwrap()
         );
-        assert_eq!(plan.vm_net.subnet, "172.16.0.0/24");
+        assert_eq!(plan.vm_net.subnet.to_string(), "172.16.0.0/24");
         assert_eq!(plan.vm_net.guest_mac, "AA:FC:AC:10:00:02");
     }
 
@@ -250,7 +245,7 @@ mod tests {
             plan.vm_net.guest_ip,
             "172.16.0.3".parse::<std::net::IpAddr>().unwrap()
         );
-        assert_eq!(plan.vm_net.subnet, "172.16.0.0/24");
+        assert_eq!(plan.vm_net.subnet.to_string(), "172.16.0.0/24");
     }
 
     #[test]
@@ -259,7 +254,7 @@ mod tests {
         alloc(&mut state, 7, "vm-7-aaaaaa");
         let plan = alloc(&mut state, 8, "vm-8-cccccc");
         assert!(plan.setup.is_some());
-        assert_eq!(plan.vm_net.subnet, "172.16.1.0/24");
+        assert_eq!(plan.vm_net.subnet.to_string(), "172.16.1.0/24");
         assert_eq!(
             plan.vm_net.guest_ip,
             "172.16.1.2".parse::<std::net::IpAddr>().unwrap()
@@ -304,7 +299,7 @@ mod tests {
 
         // ...and the freed subnet is handed out again.
         let plan = alloc(&mut state, 9, "vm-9-dddddd");
-        assert_eq!(plan.vm_net.subnet, "172.16.0.0/24");
+        assert_eq!(plan.vm_net.subnet.to_string(), "172.16.0.0/24");
     }
 
     #[test]
@@ -344,7 +339,7 @@ mod tests {
                 30,
             )
             .unwrap();
-        assert_eq!(first.vm_net.subnet, "172.16.0.0/30");
+        assert_eq!(first.vm_net.subnet.to_string(), "172.16.0.0/30");
         let second = state.alloc(
             1,
             &VmId::from("vm-1-bbbbbb"),

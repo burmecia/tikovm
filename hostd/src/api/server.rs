@@ -94,10 +94,18 @@ async fn require_bearer_token(
     Ok(next.run(request).await)
 }
 
-/// Compares two byte slices in constant time to avoid leaking token length/content via timing.
+/// Compares two byte slices without an early exit on length or content
+/// mismatch, so timing leaks neither. (Runtime still scales with length —
+/// unavoidable for variable-length inputs — but a wrong guess never
+/// short-circuits faster than a right one.)
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
+    fn padded(s: &[u8], len: usize) -> impl Iterator<Item = u8> + '_ {
+        s.iter().copied().chain(std::iter::repeat(0)).take(len)
     }
-    a.iter().zip(b).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
+    let len = a.len().max(b.len());
+    let mut diff = u8::from(a.len() != b.len());
+    for (x, y) in padded(a, len).zip(padded(b, len)) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }

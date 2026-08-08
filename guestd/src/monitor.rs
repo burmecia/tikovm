@@ -130,8 +130,14 @@ fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Option<ExitStatus>
             Ok(Some(status)) => return Some(status),
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait(); // reap
+                    // Kill/reap failures are logged at debug: the child may
+                    // have exited in the meantime, which is fine.
+                    if let Err(e) = child.kill() {
+                        debug!(error = %e, "idle check kill failed");
+                    }
+                    if let Err(e) = child.wait() {
+                        debug!(error = %e, "idle check reap failed");
+                    }
                     return None;
                 }
                 thread::sleep(WAIT_POLL);

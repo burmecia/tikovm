@@ -45,7 +45,7 @@ echo "VM ${VM_ID} resumed (Firecracker reports Running)"
 
 # Resuming a VM that is not paused must fail with the uniform JSON error
 RESUME_AGAIN_RAW="$(api_raw POST "/api/vms/${VM_ID}/resume")"
-expect_error_code "${RESUME_AGAIN_RAW}" "500"
+expect_error_code "${RESUME_AGAIN_RAW}" "409"
 echo "Second resume returned expected error: $(api_body "${RESUME_AGAIN_RAW}")"
 
 printf '\nPause/resume test passed. ✅\n\n'

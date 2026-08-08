@@ -38,8 +38,12 @@ impl From<Error> for ApiError {
             Error::VmNotFound(_) | Error::WorkloadNotFound(_) | Error::PortNotExposed { .. } => {
                 Self::new(StatusCode::NOT_FOUND, err.to_string())
             }
-            Error::PortAlreadyExposed { .. } => Self::new(StatusCode::CONFLICT, err.to_string()),
-            Error::InvalidPort(_) => Self::new(StatusCode::BAD_REQUEST, err.to_string()),
+            Error::PortAlreadyExposed { .. } | Error::InvalidStateTransition { .. } => {
+                Self::new(StatusCode::CONFLICT, err.to_string())
+            }
+            Error::InvalidPort(_) | Error::InvalidImage(_) => {
+                Self::new(StatusCode::BAD_REQUEST, err.to_string())
+            }
             // TODO: map other error variants to more specific status codes.
             _ => Self::internal(err.to_string()),
         }

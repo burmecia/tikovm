@@ -124,6 +124,7 @@ assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext
   `/{id}/ports` and `/{id}/workloads`). `/{id}/exec` is a synchronous wrapper
   over the workloads API: it starts a workload, polls for the terminal state,
   and returns the workload plus its captured logs in one response.
+  `/{id}/network` is read-only (GET returns the VM's live `NetworkConfig`).
   `/{id}/ports` manages the VM's exposed ports (`{port, label}` for HTTP
   workloads, stored in `NetworkConfig.exposed_ports`, an initial set is
   accepted in the create-VM body), and `POST /{id}/ports/{port}/token` mints

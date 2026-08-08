@@ -137,12 +137,13 @@ pub(super) async fn connect(uds_path: &Path) -> Result<UnixStream> {
     }
 
     let reply = String::from_utf8_lossy(&line);
-    if reply.starts_with("OK") {
-        Ok(stream)
-    } else {
-        Err(Error::vmm(format!(
+    // Success is exactly "OK <host-side port>"; anything else is an error
+    // (Firecracker reports failures as "ERROR <message>").
+    match reply.split_once(' ') {
+        Some(("OK", port)) if port.parse::<u32>().is_ok() => Ok(stream),
+        _ => Err(Error::vmm(format!(
             "vsock handshake with {} failed: {reply}",
             uds_path.display()
-        )))
+        ))),
     }
 }

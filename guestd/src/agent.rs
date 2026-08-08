@@ -84,9 +84,10 @@ impl Agent {
         self.send_event(&Event::Idle);
     }
 
-    /// Serialize an event to the current host connection. Errors are
-    /// swallowed: a dead connection is replaced by the accept loop, and
-    /// hostd resyncs workload state with a `list` request after reconnecting.
+    /// Serialize an event to the current host connection. Write failures are
+    /// logged, not propagated: a dead connection is replaced by the accept
+    /// loop, and hostd resyncs workload state with a `list` request after
+    /// reconnecting.
     fn send_event(&self, event: &Event) {
         let mut line = match serde_json::to_string(event) {
             Ok(s) => s,
@@ -96,8 +97,10 @@ impl Agent {
             }
         };
         line.push('\n');
-        if let Some(conn) = self.conn.lock().unwrap().clone() {
-            let _ = conn.lock().unwrap().write_all(line.as_bytes());
+        if let Some(conn) = self.conn.lock().unwrap().clone()
+            && let Err(e) = conn.lock().unwrap().write_all(line.as_bytes())
+        {
+            warn!(error = %e, "failed to send event to host");
         }
     }
 
@@ -232,12 +235,16 @@ impl Agent {
         let mut buf = [0u8; OUTPUT_BUF_SIZE];
         loop {
             match pipe.read(&mut buf) {
-                Ok(0) | Err(_) => break,
+                Ok(0) => break,
                 Ok(n) => self.send_event(&Event::Output {
                     workload_id: workload_id.to_owned(),
                     stream,
                     data: String::from_utf8_lossy(&buf[..n]).into_owned(),
                 }),
+                Err(e) => {
+                    warn!(error = %e, workload_id, ?stream, "read from workload pipe failed");
+                    break;
+                }
             }
         }
     }

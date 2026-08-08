@@ -191,7 +191,7 @@ impl Vmm for FirecrackerVmm {
         // Spawn and configure Firecracker before registering the VM, so a
         // failure leaves nothing behind in the map.
         let setup = async {
-            let child = self.spawn_fc_process(&instance_ref)?;
+            let child = self.spawn_fc_process(&instance_ref).await?;
             self.configure_vm(instance_ref.clone()).await?;
             Ok::<_, Error>(child)
         }
@@ -391,7 +391,7 @@ impl Vmm for FirecrackerVmm {
         instance_ref.lock()?.state.transition(VmState::Restoring)?;
 
         let result = async {
-            let child = self.spawn_fc_process(&instance_ref)?;
+            let child = self.spawn_fc_process(&instance_ref).await?;
 
             // Load the snapshot and resume the VM in one go.
             client

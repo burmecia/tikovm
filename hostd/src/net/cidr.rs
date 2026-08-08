@@ -11,7 +11,7 @@ fn invalid_cidr(s: &str, why: impl std::fmt::Display) -> Error {
 
 /// Minimal IPv4 CIDR, e.g. `172.16.0.0/12`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Ipv4Net {
+pub(crate) struct Ipv4Net {
     addr: Ipv4Addr,
     pub(super) prefix: u8,
 }
@@ -56,11 +56,36 @@ impl Ipv4Net {
     pub(super) fn subnet_count(self, prefix: u8) -> u32 {
         1u32 << (prefix - self.prefix)
     }
+
+    /// Dotted netmask, e.g. `255.255.255.0` for a /24.
+    pub(crate) fn netmask(self) -> Ipv4Addr {
+        Ipv4Addr::from(u32::MAX << (32 - self.prefix))
+    }
 }
 
 impl std::fmt::Display for Ipv4Net {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}/{}", self.addr, self.prefix)
+    }
+}
+
+// Serialized as its CIDR string ("172.16.0.0/24"), keeping `VmNet`'s JSON
+// shape unchanged.
+impl serde::Serialize for Ipv4Net {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Ipv4Net {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let s = <&str as serde::Deserialize>::deserialize(deserializer)?;
+        Self::parse(s).map_err(serde::de::Error::custom)
     }
 }
 

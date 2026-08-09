@@ -21,10 +21,13 @@ Cargo workspace with two binary crates:
   listens on vsock port 5000 and executes workloads on hostd's request,
   streaming stdout/stderr and exit status back as newline-delimited JSON
   events (protocol defined in `guestd/src/proto.rs`).
-
-The two crates are separate binaries deployed to different sides of the VM
-boundary; guestd deliberately avoids tokio/axum so it stays small for the
-guest image.
+- **`vmtop/`** — a top/htop-style terminal monitor for hostd. A read-only TUI
+  (ratatui + crossterm) that polls `GET /api/vms` on a cadence (default 1s,
+  `-r/--refresh-ms`) and renders the inventory grouped by project with the
+  inset state, IP, image, configured resources, and per-VM snapshot age. The
+  three crates are separate binaries deployed to different sides of the VM
+  boundary; guestd deliberately avoids tokio/axum so it stays small for the
+  guest image.
 
 ## Repository layout
 
@@ -76,7 +79,21 @@ guestd/
   src/monitor.rs      auto-suspend idle detector (runs the VM's idle_check_cmd)
   src/connection.rs   per-connection request dispatch
   src/vsock.rs        vsock listener/stream via libc
-scripts/              project-wide bash: run_hostd.sh,
+vmtop/
+  src/main.rs         CLI args (clap derive; --api-url, --token /
+                      TIKOVM_HOSTD_API_TOKEN, -r/--refresh-ms, -f flat mode),
+                      wiring: ApiClient + poller task -> App -> ui
+  src/api.rs          thin reqwest client (GET /api/vms, Bearer auth, bounded
+                      timeouts); the only place that talks to hostd
+  src/model.rs        serde models mirroring the hostd API (Vm/VmConfig/
+                      VmState/VmNet...), unit-tested parsing
+  src/view.rs         pure display model: grouping/filter/sort/selection
+                      (unit-tested), selection persists across refreshes
+  src/format.rs       terse duration/size/clock formatting helpers
+  src/app.rs          background poller (watch channel + nudge), event loop
+  src/ui.rs           ratatui rendering: header, scrollable grouped list,
+                      detail/help footer (read-only, no hostd writes)
+scripts/              project-wide bash: run_hostd.sh, run_vmtop.sh,
                       download_kernel.sh,
                       build_initramfs.sh, initramfs_init.sh,
                       rootfs/ (guest image builds: common.sh holds the shared
@@ -222,9 +239,12 @@ assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext
 ```bash
 cargo build -p hostd                 # build the host daemon
 cargo build -p guestd                # build the guest agent
-cargo test                           # unit tests (net state/cidr/types, proxy token)
+cargo build -p vmtop                 # build the terminal monitor
+cargo test                           # unit tests (net state/cidr/types, proxy token,
+                                     # vmtop view/format/model)
 cargo clippy                         # lints are kept clean (see git history)
 scripts/run_hostd.sh                   # build as current user, run via sudo -E
+scripts/run_vmtop.sh                  # build and run vmtop against local hostd
 tests/run_all.sh                       # full end-to-end suite (see below)
 ```
 
@@ -248,7 +268,9 @@ There are no Rust integration tests and no CI configuration. Testing is:
    auto-suspend activity tracker (`vmm/activity.rs`), `VmConfig` serde
    defaults (`vmm/vm.rs`), the chunk-backed volume IO engine
    (`storage/volume.rs`, plain file IO — no ublk device needed), the
-   systemd mount-unit name escaping (`vmm/firecracker/setup.rs`), and
+   systemd mount-unit name escaping (`vmm/firecracker/setup.rs`), the
+   vmtop view/format/model logic (`vmtop/src/{view,format,model}.rs`),
+   and
    guestd's idle-check runner (`guestd/src/monitor.rs`).
    Add tests in the same `#[cfg(test)] mod tests` style when touching pure
    logic. The cron parser of the schedule mode

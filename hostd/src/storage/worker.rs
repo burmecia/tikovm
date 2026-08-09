@@ -108,7 +108,11 @@ pub(crate) async fn spawn(
     }
 
     debug!(dev_id = id, path = %dev_path.display(), "ublk worker up");
-    Ok(WorkerHandle { dev_id: id, dev_path, child })
+    Ok(WorkerHandle {
+        dev_id: id,
+        dev_path,
+        child,
+    })
 }
 
 /// Delete the ublk device and make sure the worker process is gone.

@@ -86,9 +86,7 @@ impl StorageManager {
         )
         .await?;
 
-        if is_new
-            && let Err(e) = mkfs_ext4(&handle.dev_path).await
-        {
+        if is_new && let Err(e) = mkfs_ext4(&handle.dev_path).await {
             let mut child = handle.child;
             let _ = worker::stop(handle.dev_id, &mut child).await;
             let _ = std::fs::remove_dir_all(&volume_dir);
@@ -102,7 +100,12 @@ impl StorageManager {
             .ok_or_else(|| Error::storage("ublk worker exited during attach"))?;
         self.workers.lock()?.insert(
             vm_id.clone(),
-            WorkerEntry { dev_id: handle.dev_id, pid, volume_dir, respawns: 0 },
+            WorkerEntry {
+                dev_id: handle.dev_id,
+                pid,
+                volume_dir,
+                respawns: 0,
+            },
         );
         self.spawn_monitor(vm_id.clone(), handle.child);
         info!(vm_id = %vm_id, dev = %dev_path.display(), new = is_new, "block storage attached");
@@ -218,10 +221,20 @@ impl StorageManager {
                 );
 
                 tokio::time::sleep(Duration::from_secs(1 << respawns)).await;
-                match worker::spawn(&volume_dir, None, None, true, dev_id, WORKER_QUEUES, WORKER_DEPTH)
-                    .await
+                match worker::spawn(
+                    &volume_dir,
+                    None,
+                    None,
+                    true,
+                    dev_id,
+                    WORKER_QUEUES,
+                    WORKER_DEPTH,
+                )
+                .await
                 {
-                    Ok(WorkerHandle { child: new_child, .. }) => {
+                    Ok(WorkerHandle {
+                        child: new_child, ..
+                    }) => {
                         let pid = new_child.id();
                         let inserted = {
                             let mut workers = match this.workers.lock() {

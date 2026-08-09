@@ -78,7 +78,12 @@ struct FdCache {
 
 impl FdCache {
     fn new(cap: usize) -> Self {
-        Self { map: HashMap::new(), order: VecDeque::new(), next_gen: 0, cap }
+        Self {
+            map: HashMap::new(),
+            order: VecDeque::new(),
+            next_gen: 0,
+            cap,
+        }
     }
 }
 
@@ -96,7 +101,11 @@ impl Volume {
             )));
         }
         fs::create_dir_all(dir.join("chunks"))?;
-        let meta = VolumeMeta { version: 1, size_bytes, chunk_size };
+        let meta = VolumeMeta {
+            version: 1,
+            size_bytes,
+            chunk_size,
+        };
         fs::write(dir.join("meta.json"), serde_json::to_string_pretty(&meta)?)?;
         Self::open(dir)
     }
@@ -137,7 +146,10 @@ impl Volume {
     /// chunk file. Returns `None` when the chunk does not exist and
     /// `create` is false. Always opens read-write (see module docs).
     fn chunk_fd(&self, idx: u64, create: bool) -> io::Result<Option<Arc<File>>> {
-        let mut cache = self.fds.lock().map_err(|_| io::Error::other("lock poisoned"))?;
+        let mut cache = self
+            .fds
+            .lock()
+            .map_err(|_| io::Error::other("lock poisoned"))?;
         if let Some((file, _)) = cache.map.get(&idx) {
             let file = file.clone();
             cache.next_gen += 1;
@@ -173,12 +185,19 @@ impl Volume {
         // Evict clean fds while over capacity. Dirty fds are rotated to
         // the back, never closed (see module docs). Bounded pops guarantee
         // termination; if everything is dirty the cache simply grows.
-        let dirty = self.dirty.lock().map_err(|_| io::Error::other("lock poisoned"))?;
+        let dirty = self
+            .dirty
+            .lock()
+            .map_err(|_| io::Error::other("lock poisoned"))?;
         let mut pops = 0;
         while cache.map.len() > cache.cap && pops < 2 * cache.cap {
             pops += 1;
-            let Some((victim, vgen)) = cache.order.pop_front() else { break };
-            let Some((_, cur_gen)) = cache.map.get(&victim) else { continue };
+            let Some((victim, vgen)) = cache.order.pop_front() else {
+                break;
+            };
+            let Some((_, cur_gen)) = cache.map.get(&victim) else {
+                continue;
+            };
             if *cur_gen != vgen {
                 continue; // stale order entry
             }
@@ -198,8 +217,12 @@ impl Volume {
     /// return zeros. Sector-aligned only, like the kernel requests we serve.
     pub(crate) fn do_io(&self, write: bool, off: u64, buf: &mut [u8]) -> io::Result<usize> {
         let len = buf.len() as u64;
-        if !off.is_multiple_of(512) || !len.is_multiple_of(512) || off + len > self.meta.size_bytes {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "unaligned or out of range"));
+        if !off.is_multiple_of(512) || !len.is_multiple_of(512) || off + len > self.meta.size_bytes
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unaligned or out of range",
+            ));
         }
         if !write {
             buf.fill(0); // missing chunks / short reads read as zeros
@@ -217,7 +240,10 @@ impl Volume {
                 Some(file) => {
                     if write {
                         file.write_all_at(slice, in_off)?;
-                        self.dirty.lock().map_err(|_| io::Error::other("lock poisoned"))?.insert(idx);
+                        self.dirty
+                            .lock()
+                            .map_err(|_| io::Error::other("lock poisoned"))?
+                            .insert(idx);
                     } else {
                         // Holes and the unwritten tail stay zero-filled.
                         let _ = file.read_at(slice, in_off)?;
@@ -233,7 +259,13 @@ impl Volume {
     /// fdatasync every dirty chunk (parallel over a scoped thread pool),
     /// then clear the dirty set. On NFS each fdatasync is a COMMIT.
     pub(crate) fn flush(&self) -> io::Result<()> {
-        let dirty: Vec<u64> = self.dirty.lock().map_err(|_| io::Error::other("lock poisoned"))?.iter().copied().collect();
+        let dirty: Vec<u64> = self
+            .dirty
+            .lock()
+            .map_err(|_| io::Error::other("lock poisoned"))?
+            .iter()
+            .copied()
+            .collect();
         if dirty.is_empty() {
             return Ok(());
         }
@@ -251,7 +283,10 @@ impl Volume {
                 .into_iter()
                 .map(|group| s.spawn(move || self.flush_group(group)))
                 .collect();
-            handles.into_iter().map(|h| h.join().expect("flush thread panicked")).collect()
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("flush thread panicked"))
+                .collect()
         });
         results.into_iter().collect::<io::Result<()>>()
     }
@@ -266,11 +301,14 @@ impl Volume {
                     return Err(io::Error::new(
                         io::ErrorKind::NotFound,
                         format!("dirty chunk {idx} has no file"),
-                    ))
+                    ));
                 }
             };
             file.sync_data()?;
-            self.dirty.lock().map_err(|_| io::Error::other("lock poisoned"))?.remove(&idx);
+            self.dirty
+                .lock()
+                .map_err(|_| io::Error::other("lock poisoned"))?
+                .remove(&idx);
         }
         Ok(())
     }
@@ -367,10 +405,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         Volume::create(dir.path(), 4 << 20, 64 << 10).unwrap();
         // Same volume, but with a tiny fd cache to force eviction.
-        let meta: VolumeMeta = serde_json::from_str(
-            &fs::read_to_string(dir.path().join("meta.json")).unwrap(),
-        )
-        .unwrap();
+        let meta: VolumeMeta =
+            serde_json::from_str(&fs::read_to_string(dir.path().join("meta.json")).unwrap())
+                .unwrap();
         let vol = Volume {
             dir: dir.path().to_path_buf(),
             meta,

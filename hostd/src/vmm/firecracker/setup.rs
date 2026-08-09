@@ -287,12 +287,9 @@ async fn seed_overlay_disk(instance: &VmInstance) -> Result<()> {
     // would still be attached to the VM, with hostd's mount leaking.
     let seed_result = async {
         if needs_pg_hba {
-            let net = instance
-                .net
-                .as_ref()
-                .ok_or_else(|| {
-                    Error::net(format!("vm {} has no network allocation", instance.vm_id))
-                })?;
+            let net = instance.net.as_ref().ok_or_else(|| {
+                Error::net(format!("vm {} has no network allocation", instance.vm_id))
+            })?;
             let hba_dir = mount_point.join("upper/etc/postgresql/16/main/pg_hba.d");
             fs::create_dir_all(&hba_dir)?;
             fs::write(
@@ -406,7 +403,10 @@ mod tests {
     // Expected values verified against `systemd-escape --path`.
     #[test]
     fn systemd_path_escaping() {
-        assert_eq!(systemd_escape_path("/mnt/tikovm-data"), "mnt-tikovm\\x2ddata");
+        assert_eq!(
+            systemd_escape_path("/mnt/tikovm-data"),
+            "mnt-tikovm\\x2ddata"
+        );
         assert_eq!(systemd_escape_path("/data"), "data");
         assert_eq!(systemd_escape_path("/a/b-c"), "a-b\\x2dc");
         assert_eq!(systemd_escape_path("/mnt/data.d"), "mnt-data.d");

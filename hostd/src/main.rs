@@ -98,8 +98,15 @@ async fn main() -> Result<()> {
     // own queue threads. Tracing goes to stderr here: stdout is reserved
     // for the "device id: N" handshake the parent parses (libublk logs to
     // stdout with the default writer and would corrupt the handshake).
-    if let Some(Commands::UblkWorker { dir, size_mb, chunk_kb, recover, dev_id, queues, depth }) =
-        args.command
+    if let Some(Commands::UblkWorker {
+        dir,
+        size_mb,
+        chunk_kb,
+        recover,
+        dev_id,
+        queues,
+        depth,
+    }) = args.command
     {
         tracing_subscriber::fmt()
             .with_writer(std::io::stderr)

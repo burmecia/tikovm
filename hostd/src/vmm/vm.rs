@@ -150,6 +150,28 @@ fn default_check_interval_secs() -> u64 {
     30
 }
 
+/// Optional dedicated block volume for a VM: a ublk device backed by
+/// chunk files on the storage root (see `storage` module), attached as
+/// `/dev/vdc`, formatted ext4 by hostd, and mounted in the guest at
+/// `mount_path` by a seeded systemd unit. The volume dies with the VM.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct BlockStorageConfig {
+    /// Volume size in MiB (minimum 128).
+    pub size_mb: u32,
+    /// Chunk size in KiB; one of 256/512/1024/2048/4096. Default 1024 —
+    /// see `storage::volume` for why.
+    #[serde(default)]
+    pub chunk_kb: Option<u32>,
+    /// Guest mount point for the volume. Empty string attaches the device
+    /// raw (no filesystem assumptions, no mount unit).
+    #[serde(default = "default_mount_path")]
+    pub mount_path: String,
+}
+
+fn default_mount_path() -> String {
+    "/mnt/tikovm-data".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct EnvVar {
     pub key: String,
@@ -211,6 +233,9 @@ pub(crate) struct VmConfig {
     /// (enforced at create time).
     #[serde(default)]
     pub auto_suspend: Option<AutoSuspendConfig>,
+    /// Dedicated block volume (ublk, chunk-backed); see `storage` module.
+    #[serde(default)]
+    pub block_storage: Option<BlockStorageConfig>,
 }
 
 impl VmConfig {
@@ -240,6 +265,9 @@ pub(crate) struct VmInstance {
     // Storage setup
     pub rootfs_path: PathBuf, // Read-only rootfs backing the overlayfs lower dir (/dev/vda)
     pub overlay_disk: PathBuf, // Per-VM rw disk backing the overlayfs upper/work dirs (/dev/vdb)
+    /// Optional dedicated block volume device (`/dev/ublkbN` -> /dev/vdc),
+    /// set by `create_vm` when `VmConfig::block_storage` is configured.
+    pub block_device: Option<PathBuf>,
 
     // Networking setup (allocated during create_vm, before Firecracker starts)
     pub net: Option<VmNet>,
@@ -293,6 +321,7 @@ impl VmInstance {
             boot_args,
             rootfs_path,
             overlay_disk,
+            block_device: None,
             snapshot: None,
             net: None,
             guest_cid: None,
@@ -357,6 +386,46 @@ mod tests {
         assert_eq!(auto_suspend.idle_timeout_secs, 60);
         assert_eq!(auto_suspend.idle_check_cmd, vec!["/check".to_string()]);
         assert_eq!(auto_suspend.check_interval_secs, 5);
+    }
+
+    #[test]
+    fn vm_config_block_storage_defaults() {
+        let config: VmConfig = serde_json::from_str(
+            r#"{"name":"vm","project_id":1,"mode":"permanent","image":"ubuntu-24",
+                "cpus":1,"memory_mb":256,"disk_size_mb":1024,
+                "network_config":{"allow_internet":false,"exposed_ports":[]},"ssh_access":false,
+                "block_storage":{"size_mb":512}}"#,
+        )
+        .unwrap();
+        let bs = config.block_storage.unwrap();
+        assert_eq!(bs.size_mb, 512);
+        assert_eq!(bs.chunk_kb, None);
+        assert_eq!(bs.mount_path, "/mnt/tikovm-data");
+    }
+
+    #[test]
+    fn vm_config_block_storage_explicit() {
+        let config: VmConfig = serde_json::from_str(
+            r#"{"name":"vm","project_id":1,"mode":"permanent","image":"ubuntu-24",
+                "cpus":1,"memory_mb":256,"disk_size_mb":1024,
+                "network_config":{"allow_internet":false,"exposed_ports":[]},"ssh_access":false,
+                "block_storage":{"size_mb":2048,"chunk_kb":4096,"mount_path":""}}"#,
+        )
+        .unwrap();
+        let bs = config.block_storage.unwrap();
+        assert_eq!(bs.chunk_kb, Some(4096));
+        assert_eq!(bs.mount_path, "");
+    }
+
+    #[test]
+    fn vm_config_without_block_storage() {
+        let config: VmConfig = serde_json::from_str(
+            r#"{"name":"vm","project_id":1,"mode":"permanent","image":"ubuntu-24",
+                "cpus":1,"memory_mb":256,"disk_size_mb":1024,
+                "network_config":{"allow_internet":false,"exposed_ports":[]},"ssh_access":false}"#,
+        )
+        .unwrap();
+        assert!(config.block_storage.is_none());
     }
 
     #[test]

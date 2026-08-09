@@ -39,7 +39,7 @@ start_hostd() {
 		fi
 	done
 
-	setsid "${REPO_ROOT}/scripts/run_hostd.sh" >"${LOG_FILE}" 2>&1 &
+	setsid "${REPO_ROOT}/scripts/run_hostd.sh" "$@" >"${LOG_FILE}" 2>&1 &
 	HOSTD_PID=$!
 
 	echo "Started hostd (PID: ${HOSTD_PID}), logging to ${LOG_FILE}"

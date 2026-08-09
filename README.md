@@ -45,6 +45,39 @@ in-flight proxied requests, post-wake cooldown) before the snapshot happens.
 `idle_check_cmd` may be empty (HTTP-only), and a VM with neither exposed
 ports nor a check command never suspends.
 
+Block storage: a VM created with a `block_storage` config gets a dedicated
+block device (`/dev/vdc`) served by a per-VM `ublk-worker` subprocess
+(hostd re-executing itself with a hidden subcommand, driving the kernel
+ublk driver). Guest IO is mapped onto fixed-size chunk files under
+`<storage-root>/proj-<project_id>/<vm_id>/` (production: an AWS S3 Files
+NFS mount, `--storage-root` default `/mnt/s3files/vm_storage`; missing
+chunks read as zeros). hostd formats a fresh volume ext4 and seeds a
+systemd mount unit into the overlay disk, so the volume is mounted at
+`mount_path` with no guest cooperation:
+
+```json
+"block_storage": {
+    "size_mb": 512,
+    "chunk_kb": 1024,
+    "mount_path": "/mnt/tikovm-data"
+}
+```
+
+`chunk_kb` is optional (default 1024; allowed 256/512/1024/2048/4096) and
+`mount_path` may be set to `""` to attach the device raw. The volume dies
+with the VM (destroy deletes the chunk files); snapshot/restore is
+transparent because the worker and device are independent of the
+Firecracker process.
+
+Durability/performance contract (measured on S3 Files): a completed guest
+fsync means every dirty chunk was fdatasynced (one NFS COMMIT per dirty
+chunk, ~9 ms p50 — fine for data volumes, not for fsync-heavy database
+primaries). A worker crash fails in-flight IOs with EIO (the guest's ext4
+replays its journal, exactly as after a disk power blip) and the device is
+transparently recovered by a respawned worker. Expect roughly 300-800
+random 4 KiB IOPS and ~750-960 MiB/s sequential writes per volume on S3
+Files backing; the host page cache absorbs hot working sets.
+
 Schedule mode: a VM created with `"mode": "schedule"`, a `cmd`, and a
 `cron_schedule` (UTC; standard 5-field cron or 6/7 fields with seconds) is
 not started on creation. hostd's cron scheduler wakes it on every fire

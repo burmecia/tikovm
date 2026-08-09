@@ -32,7 +32,9 @@ guest image.
 Cargo.toml            workspace manifest (members: hostd, guestd); all deps
                       are pinned as workspace dependencies here
 hostd/
-  src/main.rs         CLI args (clap), wiring: NetworkManager -> FirecrackerVmm
+  src/main.rs         CLI args (clap; hidden `ublk-worker` subcommand is how
+                      StorageManager spawns per-volume workers), wiring:
+                      NetworkManager + StorageManager -> FirecrackerVmm
                       -> ApiServer + ProxyServer (run via tokio::try_join!)
   src/error.rs        crate-wide Error/Result (thiserror)
   src/api/            axum HTTP API: server.rs (router + Bearer auth middleware),
@@ -51,6 +53,12 @@ hostd/
                       IPAM allocator, unit-tested), host.rs (`ip`/`iptables`
                       shell-outs), manager.rs (NetworkManager: ties state to
                       host effects, persists network_state.json), types.rs
+  src/storage/        per-VM block storage (ublk): volume.rs (chunk-file
+                      layout + IO; pure fs logic, unit-tested), ublk_worker.rs
+                      (the worker subprocess serving /dev/ublkbN via libublk),
+                      worker.rs (spawn/handshake/stop), manager.rs
+                      (StorageManager: attach/detach on VM lifecycle, crash
+                      monitor with --recover respawn)
   src/vmm/            Vmm trait (mod.rs), activity.rs (per-VM proxy activity
                       tracker for auto-suspend), vm.rs
                       (VmConfig/VmInstance/VmState),
@@ -77,8 +85,8 @@ scripts/              project-wide bash: run_hostd.sh,
 tests/                end-to-end tests: common.sh (shared helpers), run_all.sh
                       (full suite), test_{vm_lifecycle,workloads,exec,
                       pause_resume,snapshot_restore,networking,ports,proxy,
-                      proxy_tcp,postgres_auto_suspend,auto_suspend}.sh
-                      (each self-contained)
+                      proxy_tcp,postgres_auto_suspend,auto_suspend,schedule,
+                      block_storage}.sh (each self-contained)
 assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext4,
                       initramfs.cpio.gz (some are build artifacts; .gitkeep'd)
 ```
@@ -88,7 +96,9 @@ assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext
 - Rust, edition 2024, `rust-version = 1.96`; tokio ("full"), axum 0.8,
   tower-http, hyper + hyper-util + http-body-util (the proxy), jsonwebtoken,
   serde/serde_json, clap (derive), tracing, thiserror, cron (the
-  schedule-mode cron expressions, UTC).
+  schedule-mode cron expressions, UTC), libublk + smol (the block-storage
+  ublk workers; libublk's build uses bindgen, so **libclang must be
+  installed** to build hostd).
 - Firecracker is an **external binary**, located via the `FIRECRACKER_BIN`
   env var or found on PATH (`vmm/firecracker/setup.rs` `from_path_or_env`).
 - Boot chain per VM: Firecracker boots `assets/vmlinux-*.bin` with
@@ -118,6 +128,25 @@ assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext
   vsock UDS, serial console log (`<vm_id>.serial.log`), overlay disk, and
   snapshot files. Snapshotting a VM stops its Firecracker process; only the
   snapshot files remain until restore.
+- Block storage: a VM created with `block_storage` (`VmConfig.
+  block_storage` = `{size_mb, chunk_kb?, mount_path?}`) gets a dedicated
+  block device (`/dev/vdc`) served by a per-VM `ublk-worker` subprocess
+  (hostd re-executing itself with the hidden subcommand; libublk over the
+  kernel ublk driver). Guest IO lands in fixed-size chunk files under
+  `<storage_root>/proj-<project_id>/<vm_id>/` (`--storage-root`, default
+  `/mnt/s3files/vm_storage` — an AWS S3 Files NFS mount in production;
+  missing chunks read as zeros). hostd formats a fresh volume ext4 (label
+  `tikovm-data`) and seeds a systemd mount unit into the overlay disk, so
+  the volume mounts at `mount_path` (default `/mnt/tikovm-data`; `""`
+  attaches raw). Flush = parallel per-dirty-chunk fdatasync (NFS COMMIT,
+  ~9 ms p50 on S3 Files); worker crash = EIO to the guest + ext4 journal
+  replay, with transparent device recovery via `UBLK_F_USER_RECOVERY` +
+  respawned `--recover` workers (bounded). The volume dies with the VM;
+  workers die with hostd (PR_SET_PDEATHSIG) and parked devices are deleted
+  by `StorageManager::reconcile_on_startup`. Validated chunk-size default
+  is 1024 KiB (256 KiB loses ~8x on random IO). The IO loop is blocking
+  inline per queue thread — do NOT move chunk IO onto `smol::unblock`
+  (executor starvation, measured ~400 ms/IO in the spike).
 - API: mounted under `/api` on `--api-listen` (default `0.0.0.0.0:3000`).
   Endpoints include `/api/health`, `/api/vms` (CRUD plus
   `/{id}/pause|resume|snapshot|restore|exec`, nested `/{id}/network`,
@@ -217,8 +246,10 @@ There are no Rust integration tests and no CI configuration. Testing is:
    logic (`net/state.rs` IPAM allocator, `net/cidr.rs`), the exposed-ports
    registry (`net/types.rs`), proxy JWT mint/verify (`proxy/token.rs`), the
    auto-suspend activity tracker (`vmm/activity.rs`), `VmConfig` serde
-   defaults (`vmm/vm.rs`), and guestd's idle-check runner
-   (`guestd/src/monitor.rs`).
+   defaults (`vmm/vm.rs`), the chunk-backed volume IO engine
+   (`storage/volume.rs`, plain file IO — no ublk device needed), the
+   systemd mount-unit name escaping (`vmm/firecracker/setup.rs`), and
+   guestd's idle-check runner (`guestd/src/monitor.rs`).
    Add tests in the same `#[cfg(test)] mod tests` style when touching pure
    logic. The cron parser of the schedule mode
    (`vmm/firecracker/schedule.rs`) is unit-tested the same way.
@@ -226,7 +257,7 @@ There are no Rust integration tests and no CI configuration. Testing is:
    Firecracker binary. It runs the self-contained `tests/test_*.sh` files
    (vm_lifecycle, pause_resume, snapshot_restore, workloads, exec,
    networking, ports, proxy, proxy_tcp, postgres_auto_suspend,
-   auto_suspend, schedule),
+   auto_suspend, schedule, block_storage),
    each of which starts hostd via `run_hostd.sh` and exercises its slice of
    the API surface with curl/jq: VM create/get/list/delete, pause/
    resume, snapshot/restore, workload run/stop/logs, per-project bridge and

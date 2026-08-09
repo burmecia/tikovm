@@ -22,6 +22,7 @@ TESTS=(
 	test_postgres_auto_suspend.sh
 	test_auto_suspend.sh
 	test_schedule.sh
+	test_block_storage.sh
 )
 
 for t in "${TESTS[@]}"; do

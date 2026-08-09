@@ -15,6 +15,7 @@ use tracing::{debug, info, warn};
 
 use crate::error::{Error, Result};
 use crate::net::{ExposedPort, NetworkManager, TapName};
+use crate::storage::{ALLOWED_CHUNK_KB, StorageManager};
 use crate::vmm::Vmm;
 use crate::vmm::activity::ActivityTracker;
 use crate::vmm::vm::{VmConfig, VmId, VmInstance, VmInstanceRef, VmMode, VmSnapshot, VmState};
@@ -71,6 +72,7 @@ pub(crate) struct FirecrackerVmm {
     assets_dir: PathBuf,
     work_dir: PathBuf,
     net_mgr: Arc<NetworkManager>,
+    storage_mgr: Arc<StorageManager>,
     pub(super) vms: Arc<Mutex<HashMap<VmId, FcVmEntry>>>,
     /// Next vsock guest CID to hand out (0, 1 and 2 = host are reserved).
     next_cid: AtomicU32,
@@ -103,6 +105,7 @@ impl FirecrackerVmm {
         assets_dir: impl AsRef<Path>,
         work_dir: impl AsRef<Path>,
         net_mgr: Arc<NetworkManager>,
+        storage_mgr: Arc<StorageManager>,
     ) -> Self {
         let fc_bin = from_path_or_env("firecracker", ENV_FIRECRACKER_BIN);
         debug!(?fc_bin, "Firecracker binary");
@@ -112,6 +115,7 @@ impl FirecrackerVmm {
             assets_dir: assets_dir.as_ref().to_path_buf(),
             work_dir: work_dir.as_ref().to_path_buf(),
             net_mgr,
+            storage_mgr,
             vms: Arc::new(Mutex::new(HashMap::new())),
             next_cid: AtomicU32::new(3),
             activity: ActivityTracker::new(),
@@ -161,6 +165,33 @@ impl Vmm for FirecrackerVmm {
             ));
         }
 
+        // Block-storage validation (see `storage` module for semantics).
+        if let Some(bs) = &config.block_storage {
+            if bs.size_mb < 128 {
+                return Err(Error::vmm("block_storage size_mb must be >= 128"));
+            }
+            if let Some(chunk_kb) = bs.chunk_kb
+                && !ALLOWED_CHUNK_KB.contains(&chunk_kb)
+            {
+                return Err(Error::vmm(format!(
+                    "block_storage chunk_kb must be one of {ALLOWED_CHUNK_KB:?}"
+                )));
+            }
+            if !bs.mount_path.is_empty() {
+                let ok = bs.mount_path.starts_with('/')
+                    && bs.mount_path.len() > 1
+                    && bs
+                        .mount_path
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.'));
+                if !ok {
+                    return Err(Error::vmm(
+                        "block_storage mount_path must be an absolute path of [a-z0-9/_-.]",
+                    ));
+                }
+            }
+        }
+
         // Image defaults: a postgres-16 VM with an auto_suspend config but
         // no explicit idle_check_cmd gets the SQL-based idle check its
         // image ships (scripts/rootfs/build_rootfs_postgres16.sh), so both
@@ -191,6 +222,15 @@ impl Vmm for FirecrackerVmm {
         // Spawn and configure Firecracker before registering the VM, so a
         // failure leaves nothing behind in the map.
         let setup = async {
+            // Attach the optional block volume before boot so the drive
+            // configuration can reference its device path (/dev/vdc).
+            if let Some(bs) = &config.block_storage {
+                let dev = self
+                    .storage_mgr
+                    .attach(&vm_id, config.project_id, bs)
+                    .await?;
+                instance_ref.lock()?.block_device = Some(dev);
+            }
             let child = self.spawn_fc_process(&instance_ref).await?;
             self.configure_vm(instance_ref.clone()).await?;
             Ok::<_, Error>(child)
@@ -200,6 +240,13 @@ impl Vmm for FirecrackerVmm {
         let child = match setup {
             Ok(child) => child,
             Err(e) => {
+                if instance_ref
+                    .lock()
+                    .map(|i| i.block_device.is_some())
+                    .unwrap_or(false)
+                {
+                    self.storage_mgr.detach(&vm_id).await;
+                }
                 if let Err(rel_err) = self.net_mgr.release(&vm_id) {
                     warn!(vm_id = %vm_id, error = %rel_err, "failed to roll back network allocation");
                 }
@@ -640,6 +687,10 @@ impl Vmm for FirecrackerVmm {
         if let Err(e) = self.net_mgr.release(vm_id) {
             warn!(vm_id = %vm_id, error = %e, "failed to release network allocation");
         }
+
+        // Tear down the block volume (ublk device + worker + chunk files).
+        // Best-effort, same rationale as the network release.
+        self.storage_mgr.detach(vm_id).await;
 
         // Clean up runtime artifacts.
         entry.instance.lock()?.cleanup_runtime_artifacts();

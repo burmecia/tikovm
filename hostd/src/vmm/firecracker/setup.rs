@@ -87,10 +87,17 @@ impl FirecrackerVmm {
         // and uses it as the overlayfs upper/work backing store, so it only
         // needs a fresh empty ext4 filesystem sized per the VM config.
         create_overlay_disk(&instance.overlay_disk, instance.vm_config.disk_size_mb).await?;
-        // Seed per-VM guest config (e.g. PostgreSQL pg_hba rules) into the
-        // disk's upper layer before the drive is attached.
+        // Seed per-VM guest config (e.g. PostgreSQL pg_hba rules, block-volume
+        // mount unit) into the disk's upper layer before the drive is attached.
         seed_overlay_disk(&instance).await?;
         put_drive(&client, "overlay", &instance.overlay_disk, false).await?;
+
+        // Optional dedicated block volume (/dev/vdc), served by the VM's
+        // ublk worker (see `storage` module). The drive attach order —
+        // rootfs, overlay, data — fixes the guest device names vda/vdb/vdc.
+        if let Some(block_device) = &instance.block_device {
+            put_drive(&client, "data", block_device, false).await?;
+        }
 
         put_serial(&client, &instance).await?;
         put_vsock(&client, &instance).await?;
@@ -244,20 +251,30 @@ async fn create_overlay_disk(path: &Path, size_mb: u32) -> Result<()> {
 /// config the base image cannot hardcode. The disk is loop-mounted, seeded,
 /// and unmounted again before Firecracker attaches it.
 ///
-/// Today this only handles `PostgreSQL` images: a `pg_hba` rule scoped to the
-/// VM's project subnet, so the cluster (the base image makes it listen on
-/// all interfaces) accepts password connections from the host's bridge IP
-/// and sibling VMs in the same project — and from nowhere else. The base
-/// image's `pg_hba.conf` pulls the rule in via
-/// `include_dir '/etc/postgresql/16/main/pg_hba.d'` (needs `PostgreSQL` 16).
+/// Two kinds of seeding today:
+///
+/// - `PostgreSQL` images: a `pg_hba` rule scoped to the VM's project
+///   subnet, so the cluster (the base image makes it listen on all
+///   interfaces) accepts password connections from the host's bridge IP
+///   and sibling VMs in the same project — and from nowhere else. The base
+///   image's `pg_hba.conf` pulls the rule in via
+///   `include_dir '/etc/postgresql/16/main/pg_hba.d'` (needs `PostgreSQL`
+///   16).
+/// - Block-storage volumes (`VmConfig::block_storage` with a non-empty
+///   `mount_path`): a systemd mount unit for the data drive (/dev/vdc,
+///   found by the ext4 label hostd formatted it with), so the volume is
+///   mounted at `mount_path` on every boot without guest cooperation.
 async fn seed_overlay_disk(instance: &VmInstance) -> Result<()> {
-    if instance.vm_config.image != "postgres-16" {
+    let needs_pg_hba = instance.vm_config.image == "postgres-16";
+    let mount_path = instance
+        .vm_config
+        .block_storage
+        .as_ref()
+        .map(|bs| bs.mount_path.as_str())
+        .filter(|p| !p.is_empty());
+    if !needs_pg_hba && mount_path.is_none() {
         return Ok(());
     }
-    let net = instance
-        .net
-        .as_ref()
-        .ok_or_else(|| Error::net(format!("vm {} has no network allocation", instance.vm_id)))?;
 
     let mount_point = instance.work_dir.join("seed.mnt");
     fs::create_dir_all(&mount_point)?;
@@ -269,17 +286,53 @@ async fn seed_overlay_disk(instance: &VmInstance) -> Result<()> {
     // Unmount no matter how the seeding itself fares; a disk left mounted
     // would still be attached to the VM, with hostd's mount leaking.
     let seed_result = async {
-        let hba_dir = mount_point.join("upper/etc/postgresql/16/main/pg_hba.d");
-        fs::create_dir_all(&hba_dir)?;
-        fs::write(
-            hba_dir.join("00-tikovm.conf"),
-            format!(
-                "# Seeded by hostd at VM creation: password auth only from the\n\
-                 # VM's project subnet (the host's bridge IP + sibling VMs).\n\
-                 host all all {} scram-sha-256\n",
-                net.subnet
-            ),
-        )?;
+        if needs_pg_hba {
+            let net = instance
+                .net
+                .as_ref()
+                .ok_or_else(|| {
+                    Error::net(format!("vm {} has no network allocation", instance.vm_id))
+                })?;
+            let hba_dir = mount_point.join("upper/etc/postgresql/16/main/pg_hba.d");
+            fs::create_dir_all(&hba_dir)?;
+            fs::write(
+                hba_dir.join("00-tikovm.conf"),
+                format!(
+                    "# Seeded by hostd at VM creation: password auth only from the\n\
+                     # VM's project subnet (the host's bridge IP + sibling VMs).\n\
+                     host all all {} scram-sha-256\n",
+                    net.subnet
+                ),
+            )?;
+        }
+
+        if let Some(where_path) = mount_path {
+            let unit_name = format!("{}.mount", systemd_escape_path(where_path));
+            let unit_dir = mount_point.join("upper/etc/systemd/system");
+            fs::create_dir_all(unit_dir.join("multi-user.target.wants"))?;
+            fs::write(
+                unit_dir.join(&unit_name),
+                format!(
+                    "# Seeded by hostd at VM creation: mounts the VM's dedicated\n\
+                     # block volume (the /dev/vdc drive, ext4-formatted by hostd).\n\
+                     [Unit]\n\
+                     Description=tikovm block storage volume\n\
+                     Before=local-fs.target\n\
+                     \n\
+                     [Mount]\n\
+                     What=/dev/disk/by-label/tikovm-data\n\
+                     Where={where_path}\n\
+                     Type=ext4\n\
+                     \n\
+                     [Install]\n\
+                     WantedBy=multi-user.target\n"
+                ),
+            )?;
+            std::os::unix::fs::symlink(
+                format!("../{unit_name}"),
+                unit_dir.join("multi-user.target.wants").join(&unit_name),
+            )?;
+        }
         Ok::<_, Error>(())
     }
     .await;
@@ -289,6 +342,27 @@ async fn seed_overlay_disk(instance: &VmInstance) -> Result<()> {
 
     seed_result?;
     umount_result
+}
+
+/// `systemd-escape --path` for the mount_path character set validated at
+/// VM create (`[a-z0-9/._-]`): '/' separates components (and becomes '-'
+/// in the name), '-' is escaped `\x2d`, and a '.' is escaped `\x2e` only
+/// as the very first character. The mount unit name must match this
+/// exactly or systemd refuses the unit ("Where= setting doesn't match
+/// unit name").
+fn systemd_escape_path(path: &str) -> String {
+    let mut out = String::new();
+    for c in path.trim_matches('/').chars() {
+        match c {
+            '/' => out.push('-'),
+            '-' => out.push_str("\\x2d"),
+            _ => out.push(c),
+        }
+    }
+    if let Some(rest) = out.strip_prefix('.') {
+        out = format!("\\x2e{rest}");
+    }
+    out
 }
 
 /// Run a root-requiring host tool (mount/umount) and check its exit status.
@@ -323,4 +397,20 @@ pub(super) fn from_path_or_env(binary: &str, env_var: &str) -> PathBuf {
     }
 
     PathBuf::from(binary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Expected values verified against `systemd-escape --path`.
+    #[test]
+    fn systemd_path_escaping() {
+        assert_eq!(systemd_escape_path("/mnt/tikovm-data"), "mnt-tikovm\\x2ddata");
+        assert_eq!(systemd_escape_path("/data"), "data");
+        assert_eq!(systemd_escape_path("/a/b-c"), "a-b\\x2dc");
+        assert_eq!(systemd_escape_path("/mnt/data.d"), "mnt-data.d");
+        assert_eq!(systemd_escape_path("/x/.hidden"), "x-.hidden");
+        assert_eq!(systemd_escape_path("/.hidden"), "\\x2ehidden");
+    }
 }

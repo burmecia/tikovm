@@ -21,6 +21,9 @@ pub(crate) enum Error {
     #[error("net error: {0}")]
     Net(String),
 
+    #[error("storage error: {0}")]
+    Storage(String),
+
     #[error("vm {0} not found")]
     VmNotFound(String),
 
@@ -62,6 +65,10 @@ impl Error {
 
     pub(crate) fn net(msg: impl Into<String>) -> Self {
         Error::Net(msg.into())
+    }
+
+    pub(crate) fn storage(msg: impl Into<String>) -> Self {
+        Error::Storage(msg.into())
     }
 
     pub(crate) fn proxy_token(msg: impl Into<String>) -> Self {

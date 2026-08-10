@@ -2,8 +2,9 @@
 
 A TypeScript client library for the [tikovm](https://github.com/anomalyco/tikovm)
 `hostd` HTTP API, giving you a typed, promise-based interface to manage
-Firecracker microVMs. Currently covers the **VM lifecycle**; the exposed-port,
-workload and proxy-token endpoints follow in later iterations.
+Firecracker microVMs. Covers the **VM lifecycle** plus the per-VM
+**network** and **exposed-port** endpoints; the workloads/proxy endpoint
+follow in a later iteration.
 
 ## Install
 
@@ -44,6 +45,14 @@ await vm.pause();
 await vm.resume();
 await vm.snapshot();           // suspends the VM
 await vm.restore();
+
+// Network config (read-only) and exposed-port registry.
+const network = await vm.network.get();          // GET  /api/vms/{id}/network
+await vm.ports.expose({ port: 8080, label: 'web' }); // POST /api/vms/{id}/ports
+const ports = await vm.ports.list();             // GET  /api/vms/{id}/ports
+const jwt = await vm.ports.token(8080, { proto: 'tcp', ttl_secs: 60 });
+                                                 // POST /api/vms/{id}/ports/{port}/token
+await vm.ports.remove(8080);                     // DELETE /api/vms/{id}/ports/{port}
 
 // Run a command inside the guest and block until it exits.
 const result = await vm.exec(['echo', 'hello']);
@@ -92,12 +101,32 @@ Returned by the `client.vms` methods; bound to a `vm_id` and caches the last
 
 - Accessors: `id`, `state`, `vmConfig`, `net`, plus predicates `isRunning`,
   `isPaused`, `isSuspended`, `isDestroyed`.
-- Methods: `refresh()`, `pause()`, `resume()`, `snapshot()`, `restore()`,
-  `delete()`, `exec(cmd, { env?, cwd? }?)`.
+- Lifecycle methods: `refresh()`, `pause()`, `resume()`, `snapshot()`,
+  `restore()`, `delete()`, `exec(cmd, { env?, cwd? }?)`. `exec` is hostd's
+  synchronous `/exec` wrapper: it runs a command in the guest, waits for it
+  to finish, and returns the `Workload` flattened with its captured `logs`
+  (`WorkloadLogEntry[]`).
+- `network` namespace (`vm.network.get()`): read-only network config.
+- `ports` namespace (`vm.ports.*`): exposed-port registry and proxy-token
+  minting.
 
-`exec` is hostd's synchronous `/exec` wrapper: it starts a workload in the
-guest, waits for it to finish, and returns the `Workload` flattened with its
-captured `logs` (`WorkloadLogEntry[]`).
+For id-only callers, `client.vms.network(id)` and `client.vms.ports(id)`
+return the same namespaces without going through a `Vm` wrapper.
+
+### `vm.network` and `vm.ports`
+
+| Method | Endpoint |
+| --- | --- |
+| `vm.network.get(): Promise<NetworkConfig>` | `GET /api/vms/{id}/network` |
+| `vm.ports.list(): Promise<ExposedPort[]>` | `GET /api/vms/{id}/ports` |
+| `vm.ports.expose({ port, label }): Promise<ExposedPort>` | `POST /api/vms/{id}/ports` |
+| `vm.ports.remove(port): Promise<void>` | `DELETE /api/vms/{id}/ports/{port}` |
+| `vm.ports.token(port, { ttl_secs?, proto? }?): Promise<PortToken>` | `POST /api/vms/{id}/ports/{port}/token` |
+
+`proto` is `'http'` (default) or `'tcp'` (e.g. the Postgres wire protocol).
+Minting a token requires the port to be currently exposed, and unexposing a
+port revokes proxy access immediately (hostd re-validates the registry on
+every connection).
 
 ### Errors
 

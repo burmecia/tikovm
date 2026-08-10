@@ -3,6 +3,9 @@ export type { TikovmOptions } from './client.js';
 export { VmsApi } from './vms.js';
 export { Vm } from './vm.js';
 export type { ExecOptions } from './vm.js';
+export { NetworkApi } from './network.js';
+export { PortsApi } from './ports.js';
+export type { MintPortTokenOptions, PortToken, ProxyProto } from './ports.js';
 export { toVmConfig } from './vms.js';
 export {
   TikovmApiError,

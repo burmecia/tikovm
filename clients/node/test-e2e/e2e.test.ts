@@ -204,6 +204,47 @@ describe('tikovm Node client against a real hostd', () => {
     assert.ok(quick.logs.some((l) => l.stream === 'stdout' && l.data.includes('hi')));
   });
 
+  it('network.get() reports the live config; ports registry and tokens work', async () => {
+    // The create config omitted network_config, so defaults apply.
+    const initial = await vm.network.get();
+    assert.equal(initial.allow_internet, false);
+    assert.deepEqual(initial.exposed_ports, []);
+
+    assert.deepEqual(await vm.ports.list(), []);
+
+    // Expose a port, then verify it shows up in both the ports and the
+    // network endpoints.
+    const exposed = await vm.ports.expose({ port: 8080, label: 'web' });
+    assert.deepEqual(exposed, { port: 8080, label: 'web' });
+    assert.deepEqual(await vm.ports.list(), [{ port: 8080, label: 'web' }]);
+    const afterExpose = await vm.network.get();
+    assert.deepEqual(afterExpose.exposed_ports, [{ port: 8080, label: 'web' }]);
+
+    // Exposing the same port again is a 409.
+    await assert.rejects(
+      () => vm.ports.expose({ port: 8080, label: 'web-again' }),
+      (err) => err instanceof TikovmApiError && err.status === 409,
+    );
+
+    // Mint tokens: http default and tcp with a ttl. Tokens are JWTs.
+    const httpToken = await vm.ports.token(8080);
+    assert.ok(httpToken.token.includes('.'), 'expected a JWT');
+    assert.ok(httpToken.expires_at.length > 0);
+    const tcpToken = await vm.ports.token(8080, { proto: 'tcp', ttl_secs: 60 });
+    assert.ok(tcpToken.token !== httpToken.token);
+
+    // A port that is not exposed cannot mint a token.
+    await assert.rejects(
+      () => vm.ports.token(9999),
+      (err) => err instanceof TikovmApiError && err.status === 404,
+    );
+
+    // Unexposing revokes proxy access immediately (registry no longer lists it).
+    await vm.ports.remove(8080);
+    assert.deepEqual(await vm.ports.list(), []);
+    assert.deepEqual((await vm.network.get()).exposed_ports, []);
+  });
+
   it('maps hostd failures to TikovmApiError', async () => {
     await assert.rejects(
       () => client.vms.get('vm-9999-does-not-exist'),

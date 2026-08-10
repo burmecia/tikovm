@@ -1,4 +1,6 @@
 import { HttpClient } from './http.js';
+import { NetworkApi } from './network.js';
+import { PortsApi } from './ports.js';
 import type {
   EnvVar,
   ExecResult,
@@ -19,11 +21,17 @@ export interface ExecOptions {
  * A single VM: a resource wrapper bound to a `vm_id` that caches the live
  * `VmInstance` returned by the API. Every lifecycle method calls hostd and
  * updates the cache, so chained calls see fresh state without an explicit
- * `refresh()`.
+ * `refresh()`. Nested `network`/`ports` namespaces expose the per-VM
+ * network-config and exposed-port endpoints.
  */
 export class Vm {
   private data: VmInstance | undefined;
   private seededConfig: VmConfig | undefined;
+
+  /** Read-only network config (`GET /api/vms/{id}/network`). */
+  readonly network: NetworkApi;
+  /** Exposed-port registry and proxy-token minting. */
+  readonly ports: PortsApi;
 
   /** @internal */
   constructor(
@@ -32,6 +40,8 @@ export class Vm {
     data?: VmInstance,
   ) {
     this.data = data;
+    this.network = new NetworkApi(http, id);
+    this.ports = new PortsApi(http, id);
   }
 
   /** @internal Seeds config from a create response before the first refresh. */

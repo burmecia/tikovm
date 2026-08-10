@@ -32,11 +32,12 @@ Cargo workspace with two binary crates:
   API (`npm` package `tikovm`). Wraps the `/api` endpoints behind a
   `Tikovm` client (`new Tikovm({ accessToken, baseUrl })`) with a
   `client.vms` namespace and per-VM resource objects (`vm.pause()`,
-  `vm.exec(...)`, ...). Zero runtime dependencies (native `fetch`, Node >=
-  18), TypeScript types mirroring hostd's serde shapes, unit-tested against
-  an in-process mock hostd. Currently covers VM lifecycle (CRUD, pause/
-  resume/snapshot/restore, exec); ports/workloads/proxy-token endpoints are
-  planned follow-ups.
+  `vm.exec(...)`, `vm.network`, `vm.ports`, ...). Zero runtime dependencies
+  (native `fetch`, Node >= 18), TypeScript types mirroring hostd's serde
+  shapes, unit-tested against an in-process mock hostd. Covers VM lifecycle
+  (CRUD, pause/resume/snapshot/restore, exec), the read-only per-VM network
+  config, and the exposed-port registry + proxy-token minting; the workloads
+  endpoints are a planned follow-up.
 
 ## Repository layout
 

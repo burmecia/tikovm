@@ -1,4 +1,6 @@
 import { HttpClient } from './http.js';
+import { NetworkApi } from './network.js';
+import { PortsApi } from './ports.js';
 import type {
   CreateVmResponse,
   VmConfig,
@@ -77,6 +79,16 @@ export class VmsApi {
       path: `/api/vms/${id}/restore`,
     });
     return new Vm(this.http, data.vm_id, data);
+  }
+
+  /** Read-only network config of a VM by id. */
+  network(id: string): NetworkApi {
+    return new NetworkApi(this.http, id);
+  }
+
+  /** Exposed-port registry and proxy-token minting of a VM by id. */
+  ports(id: string): PortsApi {
+    return new PortsApi(this.http, id);
   }
 }
 

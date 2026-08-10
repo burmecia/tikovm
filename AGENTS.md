@@ -32,12 +32,13 @@ Cargo workspace with two binary crates:
   API (`npm` package `tikovm`). Wraps the `/api` endpoints behind a
   `Tikovm` client (`new Tikovm({ accessToken, baseUrl })`) with a
   `client.vms` namespace and per-VM resource objects (`vm.pause()`,
-  `vm.exec(...)`, `vm.network`, `vm.ports`, ...). Zero runtime dependencies
-  (native `fetch`, Node >= 18), TypeScript types mirroring hostd's serde
-  shapes, unit-tested against an in-process mock hostd. Covers VM lifecycle
-  (CRUD, pause/resume/snapshot/restore, exec), the read-only per-VM network
-  config, and the exposed-port registry + proxy-token minting; the workloads
-  endpoints are a planned follow-up.
+  `vm.exec(...)`, `vm.network`, `vm.ports`, `vm.workloads`, ...). Zero
+  runtime dependencies (native `fetch`, Node >= 18), TypeScript types
+  mirroring hostd's serde shapes, unit-tested against an in-process mock
+  hostd. Covers VM lifecycle (CRUD, pause/resume/snapshot/restore, exec),
+  the read-only per-VM network config, the exposed-port registry +
+  proxy-token minting, and workloads (start/wait/stop/logs with `Workload`
+  resource wrappers).
 
 ## Repository layout
 
@@ -111,7 +112,7 @@ scripts/              project-wide bash: run_hostd.sh, run_vmtop.sh,
                       per-image build_rootfs_*.sh entry scripts)
 clients/node/         official Node.js/TypeScript client library (`npm` package
                       `tikovm`): Tikovm client + client.vms namespace + per-VM
-                      resource wrappers, unit-tested against a mock hostd
+                      resource wrappers, unit-tested against a mock hostd.
 tests/                end-to-end tests: common.sh (shared helpers), run_all.sh
                       (full suite), test_{vm_lifecycle,workloads,exec,
                       pause_resume,snapshot_restore,networking,ports,proxy,

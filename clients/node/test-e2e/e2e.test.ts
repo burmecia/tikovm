@@ -245,6 +245,42 @@ describe('tikovm Node client against a real hostd', () => {
     assert.deepEqual((await vm.network.get()).exposed_ports, []);
   });
 
+  it('workloads: start/wait/list/stop/logs round-trip through guestd', async () => {
+    // Start a short workload via the workloads API and wait for it to finish.
+    const wl = await vm.workloads.start({ cmd: ['sh', '-c', 'echo from-workload; exit 7'] });
+    assert.match(wl.workload_id, /^wl-/);
+    assert.equal(wl.vmId, vm.id);
+    assert.ok(wl.isActive || wl.state === 'exited', `unexpected initial state ${wl.state}`);
+
+    await wl.wait({ timeoutMs: 60_000 });
+    assert.equal(wl.state, 'exited');
+    assert.equal(wl.exit_code, 7);
+    assert.ok(wl.finished_at, 'expected a finished_at timestamp');
+
+    const logs = await wl.logs();
+    assert.ok(
+      logs.some((l) => l.stream === 'stdout' && l.data.includes('from-workload')),
+      `expected stdout 'from-workload' in ${JSON.stringify(logs)}`,
+    );
+
+    // The workload is visible in list() and get().
+    const listed = await vm.workloads.list();
+    assert.ok(listed.some((w) => w.workload_id === wl.workload_id));
+    assert.deepEqual((await vm.workloads.get(wl.workload_id)).workload_id, wl.workload_id);
+
+    // Start a long-running workload, stop it, and wait for the stopped state.
+    const long = await vm.workloads.start(['sleep', '30']);
+    await long.stop();
+    await long.wait({ timeoutMs: 30_000 });
+    assert.equal(long.state, 'stopped');
+
+    // Unknown workload ids map to 404.
+    await assert.rejects(
+      () => vm.workloads.get('wl-does-not-exist'),
+      (err) => err instanceof TikovmApiError && err.status === 404,
+    );
+  });
+
   it('maps hostd failures to TikovmApiError', async () => {
     await assert.rejects(
       () => client.vms.get('vm-9999-does-not-exist'),

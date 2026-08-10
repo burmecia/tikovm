@@ -103,7 +103,8 @@ The official Node.js/TypeScript client for the hostd API lives in
 `clients/node/` (npm package `tikovm`). It wraps the `/api` endpoints behind
 a `Tikovm` client with a `client.vms` namespace and per-VM resource objects
 for VM lifecycle management (create/get/list/delete, pause/resume, snapshot/
-restore, exec), the read-only per-VM network config, and the exposed-port
-registry with proxy-token minting. Zero runtime dependencies (native
-`fetch`, Node >= 18); see `clients/node/README.md` for usage.
+restore, exec), the read-only per-VM network config, the exposed-port
+registry with proxy-token minting, and workloads (start/wait/stop/logs with
+`Workload` resource wrappers). Zero runtime dependencies (native `fetch`,
+Node >= 18); see `clients/node/README.md` for usage.
 

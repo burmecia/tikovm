@@ -1,9 +1,10 @@
 import { HttpClient } from './http.js';
 import { NetworkApi } from './network.js';
 import { PortsApi } from './ports.js';
+import { WorkloadsApi } from './workload.js';
+import type { ExecResult } from './workload.js';
 import type {
   EnvVar,
-  ExecResult,
   VmConfig,
   VmInstance,
   VmNet,
@@ -21,8 +22,8 @@ export interface ExecOptions {
  * A single VM: a resource wrapper bound to a `vm_id` that caches the live
  * `VmInstance` returned by the API. Every lifecycle method calls hostd and
  * updates the cache, so chained calls see fresh state without an explicit
- * `refresh()`. Nested `network`/`ports` namespaces expose the per-VM
- * network-config and exposed-port endpoints.
+ * `refresh()`. Nested `network`/`ports`/`workloads` namespaces expose the
+ * per-VM network-config, exposed-port and workload endpoints.
  */
 export class Vm {
   private data: VmInstance | undefined;
@@ -32,6 +33,8 @@ export class Vm {
   readonly network: NetworkApi;
   /** Exposed-port registry and proxy-token minting. */
   readonly ports: PortsApi;
+  /** Workloads (commands run inside the guest via guestd). */
+  readonly workloads: WorkloadsApi;
 
   /** @internal */
   constructor(
@@ -42,6 +45,7 @@ export class Vm {
     this.data = data;
     this.network = new NetworkApi(http, id);
     this.ports = new PortsApi(http, id);
+    this.workloads = new WorkloadsApi(http, id);
   }
 
   /** @internal Seeds config from a create response before the first refresh. */
@@ -136,12 +140,12 @@ export class Vm {
   /**
    * Run a command inside the VM and block until it exits (hostd's
    * synchronous `/exec` wrapper over the workloads API). Returns the
-   * finished workload plus its captured stdout/stderr logs.
+   * finished workload (wire shape) plus its captured stdout/stderr logs.
    */
   async exec(cmd: string[], options: ExecOptions = {}): Promise<ExecResult> {
     const spec: WorkloadSpec = {
       cmd,
-      env: options.env ?? [],
+      ...(options.env !== undefined ? { env: options.env } : {}),
       ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
     };
     return this.http.request<ExecResult>({

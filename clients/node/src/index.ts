@@ -6,6 +6,8 @@ export type { ExecOptions } from './vm.js';
 export { NetworkApi } from './network.js';
 export { PortsApi } from './ports.js';
 export type { MintPortTokenOptions, PortToken, ProxyProto } from './ports.js';
+export { Workload, WorkloadsApi } from './workload.js';
+export type { ExecResult, StartWorkloadOptions, WaitOptions, WorkloadData } from './workload.js';
 export { toVmConfig } from './vms.js';
 export {
   TikovmApiError,
@@ -19,7 +21,6 @@ export type {
   CreateVmResponse,
   EnvVar,
   ExposedPort,
-  ExecResult,
   HealthResponse,
   NetworkConfig,
   VmConfig,
@@ -30,7 +31,6 @@ export type {
   VmNet,
   VmSnapshot,
   VmState,
-  Workload,
   WorkloadLogEntry,
   WorkloadOrigin,
   WorkloadSpec,

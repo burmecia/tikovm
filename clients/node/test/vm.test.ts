@@ -116,7 +116,7 @@ describe('Vm lifecycle methods', () => {
     const result = await vm.exec(['echo', 'hello'], { cwd: '/tmp' });
     assert.equal(requests[1]!.method, 'POST');
     assert.equal(requests[1]!.url, '/api/vms/vm-1/exec');
-    assert.deepEqual(requests[1]!.body, { cmd: ['echo', 'hello'], env: [], cwd: '/tmp' });
+    assert.deepEqual(requests[1]!.body, { cmd: ['echo', 'hello'], cwd: '/tmp' });
     assert.equal(result.workload_id, 'wl-1');
     assert.equal(result.state, 'exited');
     assert.equal(result.exit_code, 0);
@@ -126,7 +126,7 @@ describe('Vm lifecycle methods', () => {
   it('exec() omits cwd when not given', async () => {
     const { vm, requests } = await makeVm();
     await vm.exec(['ls']);
-    assert.deepEqual(requests[1]!.body, { cmd: ['ls'], env: [] });
+    assert.deepEqual(requests[1]!.body, { cmd: ['ls'] });
   });
 
   it('vmConfig/net accessors reflect the fetched instance', async () => {

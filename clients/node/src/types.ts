@@ -137,7 +137,7 @@ export interface CreateVmResponse {
 
 export interface WorkloadSpec {
   cmd: string[];
-  env: EnvVar[];
+  env?: EnvVar[];
   cwd?: string | null;
 }
 
@@ -145,29 +145,10 @@ export type WorkloadState = 'starting' | 'running' | 'exited' | 'stopped' | 'fai
 
 export type WorkloadOrigin = 'api' | 'schedule';
 
-export interface Workload {
-  workload_id: string;
-  vm_id: string;
-  spec: WorkloadSpec;
-  state: WorkloadState;
-  origin: WorkloadOrigin;
-  pid: number | null;
-  exit_code: number | null;
-  signal: number | null;
-  created_at: string;
-  started_at: string | null;
-  finished_at: string | null;
-}
-
 export interface WorkloadLogEntry {
   ts: string;
   stream: string;
   data: string;
-}
-
-/** Response of POST /api/vms/{id}/exec: the finished workload, flattened, plus captured logs. */
-export interface ExecResult extends Workload {
-  logs: WorkloadLogEntry[];
 }
 
 export interface HealthResponse {

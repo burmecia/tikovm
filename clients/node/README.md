@@ -2,9 +2,9 @@
 
 A TypeScript client library for the [tikovm](https://github.com/anomalyco/tikovm)
 `hostd` HTTP API, giving you a typed, promise-based interface to manage
-Firecracker microVMs. Covers the **VM lifecycle** plus the per-VM
-**network** and **exposed-port** endpoints; the workloads/proxy endpoint
-follow in a later iteration.
+Firecracker microVMs. Covers the **VM lifecycle**, the per-VM **network**
+and **exposed-port** endpoints, and **workloads** (commands run inside the
+guest via guestd).
 
 ## Install
 
@@ -58,6 +58,14 @@ await vm.ports.remove(8080);                     // DELETE /api/vms/{id}/ports/{
 const result = await vm.exec(['echo', 'hello']);
 console.log(result.exit_code, result.logs);
 
+// Or start a workload asynchronously and drive it.
+const wl = await vm.workloads.start({ cmd: ['sh', '-c', 'sleep 1; echo done'] });
+await wl.wait();                 // poll until exited/stopped/failed
+console.log(wl.state, wl.exit_code);
+const wlLogs = await wl.logs();  // captured stdout/stderr
+const all = await vm.workloads.list();
+await vm.workloads.stop(all[0].workload_id);
+
 // Destroy the VM.
 await vm.delete();
 
@@ -109,11 +117,14 @@ Returned by the `client.vms` methods; bound to a `vm_id` and caches the last
 - `network` namespace (`vm.network.get()`): read-only network config.
 - `ports` namespace (`vm.ports.*`): exposed-port registry and proxy-token
   minting.
+- `workloads` namespace (`vm.workloads.*`): start/inspect/stop workloads and
+  fetch their captured logs.
 
-For id-only callers, `client.vms.network(id)` and `client.vms.ports(id)`
-return the same namespaces without going through a `Vm` wrapper.
+For id-only callers, `client.vms.network(id)`, `client.vms.ports(id)` and
+`client.vms.workloads(id)` return the same namespaces without going through
+a `Vm` wrapper.
 
-### `vm.network` and `vm.ports`
+### `vm.network`, `vm.ports`, and `vm.workloads`
 
 | Method | Endpoint |
 | --- | --- |
@@ -122,11 +133,22 @@ return the same namespaces without going through a `Vm` wrapper.
 | `vm.ports.expose({ port, label }): Promise<ExposedPort>` | `POST /api/vms/{id}/ports` |
 | `vm.ports.remove(port): Promise<void>` | `DELETE /api/vms/{id}/ports/{port}` |
 | `vm.ports.token(port, { ttl_secs?, proto? }?): Promise<PortToken>` | `POST /api/vms/{id}/ports/{port}/token` |
+| `vm.workloads.start(spec | cmd, opts?): Promise<Workload>` | `POST /api/vms/{id}/workloads` |
+| `vm.workloads.list(): Promise<Workload[]>` | `GET /api/vms/{id}/workloads` |
+| `vm.workloads.get(id): Promise<Workload>` | `GET /api/vms/{id}/workloads/{id}` |
+| `vm.workloads.stop(id): Promise<Workload>` | `POST /api/vms/{id}/workloads/{id}/stop` |
+| `vm.workloads.logs(id): Promise<WorkloadLogEntry[]>` | `GET /api/vms/{id}/workloads/{id}/logs` |
 
 `proto` is `'http'` (default) or `'tcp'` (e.g. the Postgres wire protocol).
 Minting a token requires the port to be currently exposed, and unexposing a
 port revokes proxy access immediately (hostd re-validates the registry on
 every connection).
+
+`start()` accepts either a full `WorkloadSpec` (`{ cmd, env?, cwd? }`) or a
+bare command array plus options. The returned `Workload` is a resource
+wrapper: it caches the latest state and offers `refresh()`, `stop()`,
+`logs()`, and `wait({ timeoutMs?, intervalMs? }?)` — the last polls until the
+workload reaches a terminal state (`exited`/`stopped`/`failed`).
 
 ### Errors
 

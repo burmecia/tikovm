@@ -1,6 +1,7 @@
 import { HttpClient } from './http.js';
 import { NetworkApi } from './network.js';
 import { PortsApi } from './ports.js';
+import { WorkloadsApi } from './workload.js';
 import type {
   CreateVmResponse,
   VmConfig,
@@ -89,6 +90,11 @@ export class VmsApi {
   /** Exposed-port registry and proxy-token minting of a VM by id. */
   ports(id: string): PortsApi {
     return new PortsApi(this.http, id);
+  }
+
+  /** Workloads (commands run inside the guest) of a VM by id. */
+  workloads(id: string): WorkloadsApi {
+    return new WorkloadsApi(this.http, id);
   }
 }
 

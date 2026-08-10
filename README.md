@@ -96,3 +96,13 @@ captured logs are queryable through the workloads API
 "cron_schedule": "0 3 * * *",
 "timeout_secs": 3600
 ```
+
+## Node.js client
+
+The official Node.js/TypeScript client for the hostd API lives in
+`clients/node/` (npm package `tikovm`). It wraps the `/api` endpoints behind
+a `Tikovm` client with a `client.vms` namespace and per-VM resource objects
+for VM lifecycle management (create/get/list/delete, pause/resume, snapshot/
+restore, exec). Zero runtime dependencies (native `fetch`, Node >= 18);
+see `clients/node/README.md` for usage.
+

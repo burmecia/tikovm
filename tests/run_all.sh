@@ -23,6 +23,7 @@ TESTS=(
 	test_auto_suspend.sh
 	test_schedule.sh
 	test_block_storage.sh
+	test_node_client.sh
 )
 
 for t in "${TESTS[@]}"; do

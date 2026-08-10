@@ -28,6 +28,15 @@ Cargo workspace with two binary crates:
   three crates are separate binaries deployed to different sides of the VM
   boundary; guestd deliberately avoids tokio/axum so it stays small for the
   guest image.
+- **`clients/node/`** — the official Node.js/TypeScript client for the hostd
+  API (`npm` package `tikovm`). Wraps the `/api` endpoints behind a
+  `Tikovm` client (`new Tikovm({ accessToken, baseUrl })`) with a
+  `client.vms` namespace and per-VM resource objects (`vm.pause()`,
+  `vm.exec(...)`, ...). Zero runtime dependencies (native `fetch`, Node >=
+  18), TypeScript types mirroring hostd's serde shapes, unit-tested against
+  an in-process mock hostd. Currently covers VM lifecycle (CRUD, pause/
+  resume/snapshot/restore, exec); ports/workloads/proxy-token endpoints are
+  planned follow-ups.
 
 ## Repository layout
 
@@ -99,6 +108,9 @@ scripts/              project-wide bash: run_hostd.sh, run_vmtop.sh,
                       rootfs/ (guest image builds: common.sh holds the shared
                       debootstrap/configure/verify logic, sourced by the
                       per-image build_rootfs_*.sh entry scripts)
+clients/node/         official Node.js/TypeScript client library (`npm` package
+                      `tikovm`): Tikovm client + client.vms namespace + per-VM
+                      resource wrappers, unit-tested against a mock hostd
 tests/                end-to-end tests: common.sh (shared helpers), run_all.sh
                       (full suite), test_{vm_lifecycle,workloads,exec,
                       pause_resume,snapshot_restore,networking,ports,proxy,
@@ -248,6 +260,15 @@ scripts/run_vmtop.sh                  # build and run vmtop against local hostd
 tests/run_all.sh                       # full end-to-end suite (see below)
 ```
 
+Node client (`clients/node/`, package `tikovm`):
+
+```bash
+cd clients/node && npm install
+npm run typecheck                   # tsc --noEmit over src
+npm test                            # typecheck src+test, unit tests against a mock hostd
+npm run build                       # emit ESM + .d.ts into dist/
+```
+
 Runtime requirements and environment:
 
 - **hostd must run as root** — it creates bridges/TAPs, iptables NAT rules,
@@ -274,12 +295,14 @@ There are no Rust integration tests and no CI configuration. Testing is:
    guestd's idle-check runner (`guestd/src/monitor.rs`).
    Add tests in the same `#[cfg(test)] mod tests` style when touching pure
    logic. The cron parser of the schedule mode
-   (`vmm/firecracker/schedule.rs`) is unit-tested the same way.
-2. **End-to-end** — `tests/run_all.sh` requires root/KVM and a
+   (`vmm/firecracker/schedule.rs`) is unit-tested the same way. The
+   Node client's unit tests (`clients/node`, `npm test`) run against an
+   in-process mock hostd, so no root/KVM is needed for them.
+ 2. **End-to-end** — `tests/run_all.sh` requires root/KVM and a
    Firecracker binary. It runs the self-contained `tests/test_*.sh` files
    (vm_lifecycle, pause_resume, snapshot_restore, workloads, exec,
    networking, ports, proxy, proxy_tcp, postgres_auto_suspend,
-   auto_suspend, schedule, block_storage),
+   auto_suspend, schedule, block_storage, node_client),
    each of which starts hostd via `run_hostd.sh` and exercises its slice of
    the API surface with curl/jq: VM create/get/list/delete, pause/
    resume, snapshot/restore, workload run/stop/logs, per-project bridge and
@@ -289,6 +312,10 @@ There are no Rust integration tests and no CI configuration. Testing is:
    the suite (or a single `tests/test_*.sh` file) after changes to the API,
    VMM lifecycle, or networking. There is no Rust unit-test coverage for
    the VMM or API layers — the e2e script is the safety net there.
+   `test_node_client.sh` is the exception to the curl/jq pattern: it compiles
+   the Node client and its `test-e2e/e2e.test.ts` (via `tsconfig.e2e.json`
+   into `dist-e2e/`) and drives the whole VM lifecycle through the client
+   library against the live hostd.
 
 ## Asset (guest image) build process
 

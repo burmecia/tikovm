@@ -16,3 +16,6 @@ Thumbs.db
 
 # Env files
 .env
+
+# S3 Files rootfs build config (holds AWS credentials; the .sample is committed)
+scripts/rootfs/s3files-config

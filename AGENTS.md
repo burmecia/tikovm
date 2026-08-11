@@ -117,7 +117,7 @@ tests/                end-to-end tests: common.sh (shared helpers), run_all.sh
                       (full suite), test_{vm_lifecycle,workloads,exec,
                       pause_resume,snapshot_restore,networking,ports,proxy,
                       proxy_tcp,postgres_auto_suspend,auto_suspend,schedule,
-                      block_storage}.sh (each self-contained)
+                      block_storage,s3files,node_client}.sh (each self-contained)
 assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext4,
                       initramfs.cpio.gz (some are build artifacts; .gitkeep'd)
 ```
@@ -306,7 +306,7 @@ There are no Rust integration tests and no CI configuration. Testing is:
    Firecracker binary. It runs the self-contained `tests/test_*.sh` files
    (vm_lifecycle, pause_resume, snapshot_restore, workloads, exec,
    networking, ports, proxy, proxy_tcp, postgres_auto_suspend,
-   auto_suspend, schedule, block_storage, node_client),
+   auto_suspend, schedule, block_storage, s3files, node_client),
    each of which starts hostd via `run_hostd.sh` and exercises its slice of
    the API surface with curl/jq: VM create/get/list/delete, pause/
    resume, snapshot/restore, workload run/stop/logs, per-project bridge and
@@ -319,7 +319,9 @@ There are no Rust integration tests and no CI configuration. Testing is:
    `test_node_client.sh` is the exception to the curl/jq pattern: it compiles
    the Node client and its `test-e2e/e2e.test.ts` (via `tsconfig.e2e.json`
    into `dist-e2e/`) and drives the whole VM lifecycle through the client
-   library against the live hostd.
+   library against the live hostd. `test_s3files.sh` needs the AWS-backed
+   `s3files-rootfs.ext4` image (built from a filled-in
+   `scripts/rootfs/s3files-config`); it skips when the image is absent.
 
 ## Asset (guest image) build process
 
@@ -360,6 +362,17 @@ blindly:
   role password, test-only) and nothing else can. The image also ships
   `/usr/local/bin/tikovm-pg-idle-check`, the SQL-based auto-suspend idle
   check hostd defaults `idle_check_cmd` to for postgres-16 VMs.
+- `rootfs/build_rootfs_s3files.sh` — same base plus AWS S3 Files support
+  (amazon-efs-utils + botocore), producing `s3files-rootfs.ext4`. The image
+  auto-mounts the S3 file system at `/mnt/s3files` at boot via a baked-in
+  systemd mount unit (`Type=s3files` — the efs-utils helper dedicated to S3
+  file systems; `Type=efs` builds a TLS `checkHost` that can never match the
+  `*.s3files.<region>.on.aws` server cert — `tls,iam,mounttargetip=...`,
+  enabled under `remote-fs.target.wants`). The file system ID, mount target
+  IP, region, and AWS credentials are read at build time from the
+  git-ignored `rootfs/s3files-config` (template:
+  `rootfs/s3files-config.sample`) and baked into the image — the mount unit,
+  `/etc/amazon/efs/efs-utils.conf`, and `/root/.aws/credentials` (0600).
 - `build_initramfs.sh` — packs busybox + `initramfs_init.sh` into
   `initramfs.cpio.gz` (newc cpio, gzipped). `initramfs.cpio.gz` is
   git-ignored as a build artifact.

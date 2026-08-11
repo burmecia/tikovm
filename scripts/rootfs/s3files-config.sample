@@ -1,0 +1,20 @@
+# S3 Files build-time config for build_rootfs_s3files.sh.
+#
+# Copy this file to `s3files-config` (same directory, git-ignored) and fill in
+# real values, then run build_rootfs_s3files.sh. The values are baked into the
+# rootfs image: the file system / mount target / region land in the systemd
+# mount unit and efs-utils config, the credentials land in
+# /root/.aws/credentials (mode 0600) so mount.efs/botocore pick them up via
+# the default AWS credential chain.
+
+# S3 file system to mount at /mnt/s3files.
+FILE_SYSTEM_ID=fs-xxxxxxxxxxxxxxxxx
+# IP of the file system's mount target (pick one in the host's AZ/subnet).
+MOUNT_TARGET_IP=10.0.0.0
+# AWS region of the file system.
+AWS_REGION=ap-southeast-2
+
+# AWS credentials used to sign the mount (TLS + IAM) and S3 data requests.
+AWS_ACCESS_KEY_ID=AKIA...
+AWS_SECRET_ACCESS_KEY=...
+# AWS_SESSION_TOKEN=   # uncomment only for temporary (STS) credentials

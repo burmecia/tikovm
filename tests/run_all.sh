@@ -23,6 +23,7 @@ TESTS=(
 	test_auto_suspend.sh
 	test_schedule.sh
 	test_block_storage.sh
+	test_s3files.sh
 	test_node_client.sh
 )
 

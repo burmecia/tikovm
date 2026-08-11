@@ -143,10 +143,12 @@ assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext
   with a subnet carved from `--net-supernet` (default `172.16.0.0/12`) at
   `--net-subnet-prefix` (default /24). VMs in one project share the subnet;
   the host bridge IP `.1` is the gateway; egress is per-subnet iptables
-  MASQUERADE that excludes supernet destinations, so cross-project traffic
-  is routed with its real source IP. Bridge/subnet is created with the
-  project's first VM and torn
-  down with its last; allocation state persists to
+  MASQUERADE that spares traffic egressing another tikovm bridge (`! -o
+  tbr-+`), so cross-project traffic is routed with its real source IP while
+  everything heading to the real world is NATed — even destinations that
+  overlap the supernet (e.g. an AWS VPC in 172.31.0.0/16). Bridge/subnet is
+  created with the project's first VM and torn down with its last; allocation
+  state persists to
   `<work_dir>/network_state.json` and is reconciled on startup. The guest IP
   is passed as a kernel `ip=` boot argument (`CONFIG_IP_PNP=y`), so eth0 is
   configured before init runs.

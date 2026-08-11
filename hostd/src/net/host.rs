@@ -69,16 +69,23 @@ pub(super) fn ensure_bridge(setup: &ProjectSetup) -> Result<()> {
     ensure_ip_forward()?;
     // Egress NAT for the whole project subnet, plus explicit FORWARD accepts
     // (FORWARD policy is DROP on e.g. Docker-enabled hosts). The MASQUERADE
-    // excludes the supernet: intra-supernet (cross-project) traffic must
-    // keep its real source IP — both so per-project access rules in guests
-    // (e.g. a seeded PostgreSQL pg_hba subnet rule) see the true origin, and
-    // so one project's VMs can't impersonate the host's bridge IP on another
-    // project's subnet.
+    // matches on the egress interface, not the destination: traffic leaving
+    // via a tikovm bridge (cross-project) keeps its real source IP — both so
+    // per-project access rules in guests (e.g. a seeded PostgreSQL pg_hba
+    // subnet rule) see the true origin, and so one project's VMs can't
+    // impersonate the host's bridge IP on another project's subnet — while
+    // everything heading to the real world is NATed. Matching on `-d
+    // <supernet>` instead would break when real infrastructure overlaps the
+    // supernet (e.g. this host's AWS VPC is 172.31.0.0/16 ⊂ 172.16.0.0/12:
+    // guest traffic to an S3 Files mount target would leave unmasqueraded
+    // and be dropped).
     //
-    // Remove any legacy unrestricted rule first: hostd versions before the
-    // supernet exclusion installed `-s <subnet> -j MASQUERADE`, which would
-    // otherwise shadow the narrowed rule (and leak at teardown).
-    iptables_remove(&str_refs(&legacy_masq_rule(setup)));
+    // Remove any legacy rule forms first (older hostd versions installed
+    // `-s <subnet> -j MASQUERADE`, then `-s <subnet> ! -d <supernet> -j
+    // MASQUERADE`); a stale form would otherwise shadow or leak at teardown.
+    for rule in legacy_masq_rules(setup) {
+        iptables_remove(&str_refs(&rule));
+    }
     for rule in nat_rules(setup, "-A") {
         iptables_ensure(&str_refs(&rule))?;
     }
@@ -89,9 +96,11 @@ pub(super) fn delete_bridge(setup: &ProjectSetup) -> Result<()> {
     for rule in nat_rules(setup, "-D") {
         iptables_remove(&str_refs(&rule));
     }
-    // Also try the pre-supernet-exclusion form, in case a bridge created by
-    // an older hostd is being torn down.
-    iptables_remove(&str_refs(&legacy_masq_rule(setup)));
+    // Also try the legacy forms, in case a bridge created by an older hostd
+    // is being torn down.
+    for rule in legacy_masq_rules(setup) {
+        iptables_remove(&str_refs(&rule));
+    }
     if link_exists(&setup.bridge) {
         run_cmd("ip", &["link", "set", &setup.bridge, "down"])?;
         run_cmd("ip", &["link", "del", &setup.bridge])?;
@@ -105,9 +114,9 @@ fn str_refs(rule: &[String]) -> Vec<&str> {
 }
 
 /// The iptables rules wiring up a project bridge, with `verb` (`-A` or
-/// `-D`) spliced in: egress NAT for the subnet excluding the supernet, plus
-/// the two FORWARD accepts. Shared by `ensure_bridge` and `delete_bridge`
-/// so the two can never drift apart.
+/// `-D`) spliced in: egress NAT for the subnet for anything not heading back
+/// into a tikovm bridge, plus the two FORWARD accepts. Shared by
+/// `ensure_bridge` and `delete_bridge` so the two can never drift apart.
 fn nat_rules(setup: &ProjectSetup, verb: &str) -> [Vec<String>; 3] {
     let subnet = setup.subnet.to_string();
     [
@@ -119,8 +128,8 @@ fn nat_rules(setup: &ProjectSetup, verb: &str) -> [Vec<String>; 3] {
             "-s".into(),
             subnet.clone(),
             "!".into(),
-            "-d".into(),
-            setup.supernet.to_string(),
+            "-o".into(),
+            format!("{BRIDGE_PREFIX}+"),
             "-j".into(),
             "MASQUERADE".into(),
         ],
@@ -147,18 +156,36 @@ fn nat_rules(setup: &ProjectSetup, verb: &str) -> [Vec<String>; 3] {
     ]
 }
 
-/// The legacy pre-supernet-exclusion MASQUERADE rule, in delete form: only
-/// ever removed (by both `ensure_bridge` and `delete_bridge`), never added.
-fn legacy_masq_rule(setup: &ProjectSetup) -> Vec<String> {
-    vec![
-        "-t".into(),
-        "nat".into(),
-        "-D".into(),
-        "POSTROUTING".into(),
-        "-s".into(),
-        setup.subnet.to_string(),
-        "-j".into(),
-        "MASQUERADE".into(),
+/// Legacy MASQUERADE rule forms, in delete form: only ever removed (by both
+/// `ensure_bridge` and `delete_bridge`), never added. Hostd first installed
+/// an unrestricted `-s <subnet> -j MASQUERADE`, then one excluding supernet
+/// destinations (`! -d <supernet>`); both predate the egress-interface match.
+fn legacy_masq_rules(setup: &ProjectSetup) -> [Vec<String>; 2] {
+    let subnet = setup.subnet.to_string();
+    [
+        vec![
+            "-t".into(),
+            "nat".into(),
+            "-D".into(),
+            "POSTROUTING".into(),
+            "-s".into(),
+            subnet.clone(),
+            "-j".into(),
+            "MASQUERADE".into(),
+        ],
+        vec![
+            "-t".into(),
+            "nat".into(),
+            "-D".into(),
+            "POSTROUTING".into(),
+            "-s".into(),
+            subnet,
+            "!".into(),
+            "-d".into(),
+            setup.supernet.to_string(),
+            "-j".into(),
+            "MASQUERADE".into(),
+        ],
     ]
 }
 

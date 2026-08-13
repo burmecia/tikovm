@@ -373,6 +373,27 @@ blindly:
   git-ignored `rootfs/s3files-config` (template:
   `rootfs/s3files-config.sample`) and baked into the image — the mount unit,
   `/etc/amazon/efs/efs-utils.conf`, and `/root/.aws/credentials` (0600).
+  The S3 Files-specific setup is the shared `setup_s3files <rootfs>` helper
+  in `common.sh`, so other images layer software on top of the same S3 mount
+  (see build_rootfs_tiko_postgres.sh below).
+- `rootfs/build_rootfs_tiko_postgres.sh` — same s3files base plus the
+  customized Tiko PostgreSQL built from the separate tiko repo (default
+  `/home/ubuntu/tiko`, override with `TIKO_ROOT`), producing
+  `tiko-postgres-rootfs.ext4`. The Tiko postgres is a vendored postgres tree
+  patched with the tiko storage manager (`smgr` crate, statically linked into
+  the postgres binary) and the `worker` bgworker cdylib
+  (`libtikoworker.so`, loaded via `shared_preload_libraries`). The script
+  consumes build outputs, it does not build tiko: it requires
+  `$TIKO_ROOT/target/pg-install` (from tiko's `scripts/build_postgres.sh`)
+  and `$TIKO_ROOT/target/release/libtikoworker.so` (from `cargo build
+  --release -p worker` in tiko), failing fast with instructions if either is
+  missing. extra_setup calls the shared `setup_s3files`, creates the
+  `postgres` system user (`useradd --root`), installs the pg-install tree
+  into `/usr/local` plus `libtikoworker.so` into `/usr/local/lib/postgresql`
+  ($libdir), bakes in the runtime scripts (`init_pg.sh`, `start_pg.sh`,
+  `tiko_env.sh`, `postgresql.tiko.conf`) and VM-0 identity defaults in
+  `/var/lib/postgresql/tiko.env`, and enables a `s3files-postgres-owner`
+  oneshot that chowns `/mnt/s3files` to postgres after the boot mount.
 - `build_initramfs.sh` — packs busybox + `initramfs_init.sh` into
   `initramfs.cpio.gz` (newc cpio, gzipped). `initramfs.cpio.gz` is
   git-ignored as a build artifact.

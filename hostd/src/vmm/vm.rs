@@ -245,6 +245,7 @@ impl VmConfig {
             "postgres-16" => Ok("postgres-16-rootfs.ext4".to_string()),
             "python-3.12" => Ok("python-3.12-rootfs.ext4".to_string()),
             "s3files" => Ok("s3files-rootfs.ext4".to_string()),
+            "tiko-postgres" => Ok("tiko-postgres-rootfs.ext4".to_string()),
             "ubuntu-24" => Ok("ubuntu-24.04-rootfs.ext4".to_string()),
             _ => Err(Error::InvalidImage(self.image.clone())),
         }

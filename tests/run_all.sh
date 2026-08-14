@@ -24,6 +24,7 @@ TESTS=(
 	test_schedule.sh
 	test_block_storage.sh
 	test_s3files.sh
+	test_tiko_postgres.sh
 	test_node_client.sh
 )
 

@@ -35,7 +35,7 @@ echo "Running node client e2e against ${HOSTD_URL}"
 	TIKOVM_HOSTD_URL="${HOSTD_URL}" \
 		TIKOVM_HOSTD_TOKEN="${HOSTD_TOKEN}" \
 		TIKOVM_CREATED_VMS_FILE="${CREATED_VMS_FILE}" \
-		node --test 'dist-e2e/test-e2e/*.test.js'
+		node --test 'dist-e2e/test-e2e/e2e.test.js'
 )
 
 printf '\nNode client test passed. ✅\n\n'

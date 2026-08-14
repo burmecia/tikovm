@@ -11,15 +11,21 @@
 # binary) and the `worker` crate, a background task loaded via
 # shared_preload_libraries=libtikoworker that streams WAL. Both are baked into
 # this image along with the runtime scripts that init/start the server
-# (init_pg.sh / start_pg.sh / tiko_env.sh / postgresql.tiko.conf). Data lives
-# on the S3 Files mount at /mnt/s3files (TIKO_STORAGE_ROOT), which is mounted
-# at boot by the shared s3files setup; a oneshot service chowns the mount root
-# to the postgres user after it comes up.
+# (init_pg.sh / start_pg.sh / tiko_env.sh / postgresql.tiko.conf). The Tiko
+# operator CLI tools (tiko_pitr / tiko_branch / tiko_restore /
+# tiko_tlseg_viewer, the `cli` crate) are installed too: the viewer goes
+# straight into /usr/local/bin, while the identity-sensitive tools land as
+# real binaries in /usr/local/libexec with a /usr/local/bin wrapper that
+# sources tiko_env.sh first. Data lives on the S3 Files mount at /mnt/s3files
+# (TIKO_STORAGE_ROOT), which is mounted at boot by the shared s3files setup; a
+# oneshot service chowns the mount root to the postgres user after it comes up.
 #
 # Prerequisites (not run here — this script only consumes the build outputs):
 #   - tiko's build_postgres.sh has run, producing $TIKO_ROOT/target/pg-install
 #   - $TIKO_ROOT/target/release/libtikoworker.so has been built (the worker
 #     crate is a cdylib; only the debug build is produced by build_postgres.sh)
+#   - 'cargo build --release -p cli' has run in $TIKO_ROOT, producing the
+#     tiko_* operator binaries in $TIKO_ROOT/target/release
 #   - scripts/rootfs/s3files-config exists (copy s3files-config.sample)
 #
 # Per-VM identity (TIKO_ORG_ID/TIKO_DB_ID/TIKO_PROJECT_ID) is baked as VM-0
@@ -38,6 +44,9 @@ source "${SCRIPT_DIR}/common.sh"
 TIKO_ROOT="${TIKO_ROOT:-/home/ubuntu/tiko}"
 PG_INSTALL="${TIKO_ROOT}/target/pg-install"
 WORKER_LIB="${TIKO_ROOT}/target/release/libtikoworker.so"
+# Operator CLI tools (the cli crate): the ones that need identity/storage env
+# get a wrapper in /usr/local/bin around the real binary in /usr/local/libexec.
+CLI_BINS="tiko_pitr tiko_branch tiko_restore tiko_tlseg_viewer"
 
 # Fail fast with actionable messages instead of a confusing mid-build error:
 # this script consumes build outputs, it does not build tiko itself.
@@ -49,6 +58,13 @@ for missing in "${PG_INSTALL}" "${WORKER_LIB}"; do
 		else
 			echo "Run 'cargo build --release -p worker' in ${TIKO_ROOT} first (builds target/release/libtikoworker.so)." >&2
 		fi
+		exit 1
+	fi
+done
+for bin in ${CLI_BINS}; do
+	if [[ ! -e "${TIKO_ROOT}/target/release/${bin}" ]]; then
+		echo "ERROR: ${TIKO_ROOT}/target/release/${bin} not found." >&2
+		echo "Run 'cargo build --release -p cli' in ${TIKO_ROOT} first." >&2
 		exit 1
 	fi
 done
@@ -102,6 +118,19 @@ extra_setup() {
 		sudo install -m 0755 "${TIKO_ROOT}/scripts/${f}" "${pghome}/${f}"
 	done
 
+	# Tiko operator CLI tools. The identity-sensitive ones (pitr/branch/
+	# restore) live as real binaries in /usr/local/libexec with a
+	# /usr/local/bin wrapper that sources tiko_env.sh, so identity, storage
+	# paths and PGDATA are set up automatically (see the wrapper scripts in
+	# $TIKO_ROOT/scripts/*.sh). tiko_tlseg_viewer is a plain tool with no
+	# wrapper.
+	sudo mkdir -p "${rootfs}/usr/local/libexec"
+	for bin in tiko_pitr tiko_branch tiko_restore; do
+		sudo install -m 0755 "${TIKO_ROOT}/target/release/${bin}" "${rootfs}/usr/local/libexec/${bin}"
+		sudo install -m 0755 "${TIKO_ROOT}/scripts/${bin}.sh" "${rootfs}/usr/local/bin/${bin}"
+	done
+	sudo install -m 0755 "${TIKO_ROOT}/target/release/tiko_tlseg_viewer" "${rootfs}/usr/local/bin/tiko_tlseg_viewer"
+
 	# Per-VM identity defaults (VM-0). tiko's host-side launcher overrides
 	# this per VM via the overlay upper layer; tiko_env.sh treats the file as
 	# the single source of truth for org/db/project + storage paths.
@@ -144,4 +173,4 @@ UNIT
 build_rootfs "tiko-postgres-rootfs.ext4" \
 	"python3,python3-pip,nfs-common,stunnel4,zlib1g,libreadline8t64" \
 	"https://archive.ubuntu.com/ubuntu" \
-	bash -c 'test -x /sbin/mount.s3files && /usr/local/bin/postgres --version && test -f /usr/local/lib/postgresql/libtikoworker.so'
+	bash -c 'test -x /sbin/mount.s3files && /usr/local/bin/postgres --version && test -f /usr/local/lib/postgresql/libtikoworker.so && test -x /usr/local/bin/tiko_pitr && test -x /usr/local/bin/tiko_branch && test -x /usr/local/bin/tiko_restore && test -x /usr/local/bin/tiko_tlseg_viewer'

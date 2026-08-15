@@ -39,6 +39,10 @@ import {
 
 export const TIKO_IMAGE = 'tiko-postgres';
 
+/** Guest port the project's tiko postgres listens on; exposed at creation so
+ * the proxy can forward psql connections (JWT in `tikovm_token`). */
+export const TIKO_PG_PORT = 5432;
+
 /** Images users may add as extra (non-database) VMs to a project. */
 export const EXTRA_IMAGES = ['ubuntu-24', 'python-3.12', 'node-22'] as const;
 export type ExtraImage = (typeof EXTRA_IMAGES)[number];
@@ -63,7 +67,12 @@ export async function provisionProject(
       cpus: 1,
       memory_mb: 512,
       disk_size_mb: 1024,
-      network_config: { allow_internet: true },
+      network_config: {
+        allow_internet: true,
+        // Expose postgres so the proxy accepts connections to it (the UI's
+        // "copy connection string" mints a tcp token for this port).
+        exposed_ports: [{ port: TIKO_PG_PORT, label: 'postgres' }],
+      },
       // Snapshot the VM after 2 min without client connections (hostd fills
       // in the image's SQL-based idle check); any exec/SQL request wakes it.
       auto_suspend: { idle_timeout_secs: 120 },
@@ -241,4 +250,18 @@ export function psqlArgv(sql: string): string[] {
     '-c',
     sql,
   ]);
+}
+
+/**
+ * psql command a user runs on their own machine to reach the project's
+ * database through hostd's TCP proxy: the minted JWT rides in the
+ * `tikovm_token` startup parameter (the proxy verifies and strips it, then
+ * splices bytes). The guest pg_hba trusts the project subnet — the host's
+ * bridge IP is in it — so no password is needed.
+ */
+export function psqlConnectionString(cfg: Config, token: string): string {
+  return (
+    `psql "host=${cfg.proxyHost} port=${cfg.proxyPort} user=postgres ` +
+    `dbname=postgres options='-c tikovm_token=${token}'"`
+  );
 }

@@ -8,7 +8,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
-import { loadConfig } from './config.js';
+import { loadConfig, detectPublicIpv4 } from './config.js';
 import { installShutdownHandler, startTtlSweeper, sweepOrphans } from './cleanup.js';
 import { makeClient } from './hostd.js';
 import { apiRouter } from './routes.js';
@@ -18,6 +18,12 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
+  // The connection string is pasted on the user's machine, not here: default
+  // the proxy host to this instance's public IPv4 (EC2 metadata), falling
+  // back to the HOSTD_URL hostname when there's no public address.
+  if (!cfg.proxyHost) {
+    cfg.proxyHost = (await detectPublicIpv4()) ?? new URL(cfg.hostdUrl).hostname;
+  }
   const client = makeClient(cfg);
   const registry = new Registry();
 
@@ -42,6 +48,7 @@ async function main(): Promise<void> {
   const server = app.listen(cfg.port, () => {
     console.log(
       `[webapp] listening on http://0.0.0.0:${cfg.port} (hostd ${cfg.hostdUrl}, ` +
+        `proxy ${cfg.proxyHost}:${cfg.proxyPort}, ` +
         `ttl ${Math.round(cfg.projectTtlMs / 1000)}s)`,
     );
   });

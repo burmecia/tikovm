@@ -91,15 +91,6 @@ export default function App() {
           hostd {overview ? (overview.hostdReachable ? '●' : '○') : '…'}
         </span>
       </header>
-      {banner && (
-        <div
-          className={`banner ${banner.kind}`}
-          onClick={() => setBanner(null)}
-          title="click to dismiss"
-        >
-          {banner.text}
-        </div>
-      )}
       <main className="main">
         <TopPanel vms={vms} selectedVmId={selectedVmId} onSelect={setSelectedVmId} />
         <LeftPanel
@@ -126,6 +117,26 @@ export default function App() {
               runQuery(() => api.exec(selectedVm.vmId, cmd), 'exec')
             }
             onSql={(sql) => runQuery(() => api.sql(selectedVm.vmId, sql), 'query')}
+            onCopyConnStr={() => {
+              void (async () => {
+                try {
+                  const { connectionString, expiresAt } = await api.connectionString(
+                    selectedVm.vmId,
+                  );
+                  await navigator.clipboard.writeText(connectionString);
+                  const expiry = new Date(expiresAt).toLocaleTimeString();
+                  setBanner({
+                    kind: 'info',
+                    text: `psql connection string copied to clipboard — valid until ${expiry} (1 hour)`,
+                  });
+                } catch (err) {
+                  setBanner({
+                    kind: 'error',
+                    text: err instanceof Error ? err.message : String(err),
+                  });
+                }
+              })();
+            }}
           />
         ) : (
           <section className="panel right">
@@ -134,6 +145,15 @@ export default function App() {
           </section>
         )}
       </main>
+      {banner && (
+        <div
+          className={`banner ${banner.kind}`}
+          onClick={() => setBanner(null)}
+          title="click to dismiss"
+        >
+          {banner.text}
+        </div>
+      )}
     </div>
   );
 }

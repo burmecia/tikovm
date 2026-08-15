@@ -19,9 +19,11 @@ import {
 import {
   EXTRA_IMAGES,
   TIKO_IMAGE,
+  TIKO_PG_PORT,
   createExtraVm,
   deleteProject,
   psqlArgv,
+  psqlConnectionString,
   provisionProject,
 } from './provision.js';
 import type { Project, ProjectStatus, Registry } from './state.js';
@@ -250,6 +252,30 @@ export function apiRouter(deps: ApiDeps): Router {
       registry.removeVm(vmId);
       console.log(`[webapp] VM ${vmId} deleted (was in project ${owner.id})`);
       res.status(204).end();
+    }),
+  );
+
+  router.post(
+    '/vms/:vmId/connection-string',
+    handle(async (req, res) => {
+      const vmId = req.params.vmId;
+      const owner = registry.vmOwner(vmId);
+      if (!owner) {
+        return fail(res, 404, `VM ${vmId} is not managed by this webapp`);
+      }
+      const entry = owner.vms.find((v) => v.vmId === vmId);
+      if (entry?.kind !== 'tiko') {
+        return fail(res, 400, 'connection strings are only available for tiko postgres VMs');
+      }
+      // Mint a tcp proxy token (the JWT rides in the psql startup packet's
+      // tikovm_token parameter). 1h matches the default project TTL.
+      const { token, expires_at } = await client.vms
+        .ports(vmId)
+        .token(TIKO_PG_PORT, { proto: 'tcp', ttl_secs: 3600 });
+      res.json({
+        connectionString: psqlConnectionString(cfg, token),
+        expiresAt: expires_at,
+      });
     }),
   );
 

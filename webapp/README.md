@@ -6,9 +6,10 @@ tiko postgres guest image end to end. Three panels:
 - **top** — vmtop-style live inventory of all demo VMs (1s poll)
 - **left** — projects (create/delete), each with its nested VM list
 - **right** — operations on the selected VM: exec-in-guest, a SQL console
-  for the project's tiko postgres VM, and delete for extra VMs (the tiko VM
-  goes away with its project; it auto-suspends when idle and wakes on the
-  next request)
+  and a copyable psql connection string (mints a 1h proxy token) for the
+  project's tiko postgres VM, and delete for extra VMs (the tiko VM goes
+  away with its project; it auto-suspends when idle and wakes on the next
+  request)
 
 ## What a "project" is
 
@@ -64,6 +65,8 @@ hostd must already be running (see `scripts/run_hostd.sh`).
 | `PROJECT_TTL_MS` | `3600000` | project lifetime (e.g. `120000` to demo expiry) |
 | `DEMO_TAG` | `tikovm-demo` | tag marking the app's VMs (orphan sweep) |
 | `TIKO_ORG_ID` | `12` | tiko org id baked into every `tiko.env` |
+| `PROXY_HOST` | auto-detected EC2 public IPv4 (fallback: `HOSTD_URL` hostname) | host written into the psql connection string |
+| `PROXY_PORT` | `8080` | hostd proxy listener port (for the connection string) |
 
 ## Tests
 

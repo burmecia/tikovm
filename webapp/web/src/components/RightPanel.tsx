@@ -9,6 +9,7 @@ interface Props {
   onDelete: () => void;
   onExec: (cmd: string) => Promise<ExecResult | null>;
   onSql: (sql: string) => Promise<ExecResult | null>;
+  onCopyConnStr: () => void;
 }
 
 /** Right panel: operations on the selected VM. */
@@ -18,6 +19,7 @@ export default function RightPanel({
   onDelete,
   onExec,
   onSql,
+  onCopyConnStr,
 }: Props) {
   const [cmd, setCmd] = useState('uname -a');
   const [sql, setSql] = useState('select version();');
@@ -63,13 +65,22 @@ export default function RightPanel({
             <span className="v mono">
               org 12 · db {project.dbId} · project {project.id}
             </span>
-            <span className="k">connect</span>
-            <span className="v mono connect">
-              psql -h {vm.guestIp ?? '<ip>'} -U postgres -d postgres
-            </span>
           </>
         )}
       </div>
+
+      {isTiko && (
+        <>
+          <div className="section-title">connect</div>
+          <div className="button-row">
+            <button onClick={onCopyConnStr}>copy psql connection string</button>
+          </div>
+          <div className="hint dim">
+            mints a 1-hour proxy token and copies a psql command that connects
+            through hostd's TCP proxy
+          </div>
+        </>
+      )}
 
       {isTiko ? (
         <div className="hint dim">

@@ -47,6 +47,12 @@ export const api = {
   deleteVm: (vmId: string) =>
     call<void>(`/api/demo/vms/${vmId}`, { method: 'DELETE' }),
 
+  connectionString: (vmId: string) =>
+    call<{ connectionString: string; expiresAt: string }>(
+      `/api/demo/vms/${vmId}/connection-string`,
+      { method: 'POST' },
+    ),
+
   exec: (vmId: string, cmd: string) =>
     call<ExecResult>(`/api/demo/vms/${vmId}/exec`, {
       method: 'POST',

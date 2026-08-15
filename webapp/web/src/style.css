@@ -76,8 +76,13 @@ body {
 }
 
 .banner {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10;
   padding: 6px 14px;
-  border-bottom: 1px solid var(--border);
+  border-top: 1px solid var(--border);
   cursor: pointer;
   white-space: pre-wrap;
 }
@@ -393,10 +398,6 @@ body {
 
 .info-grid .v {
   overflow-wrap: anywhere;
-}
-
-.info-grid .connect {
-  color: var(--accent);
 }
 
 .section-title {

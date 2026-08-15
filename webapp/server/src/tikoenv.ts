@@ -7,6 +7,10 @@
 //! `init_pg.sh` runs) so every project gets its own tiko identity. The tiko
 //! storage manager namespaces objects as `{TIKO_STORAGE_ROOT}/s3sim/{org}/{db}`,
 //! so a globally unique `dbId` per project keeps S3 Files data disjoint.
+//!
+//! Also here: the seed-pack constants and the `tiko_branch restore` argv
+//! builder used to initialize a project's database by branching it from the
+//! seed db (db_id=0) — pure logic, unit-tested alongside the env builder.
 
 /** The identity fields of one demo project's tiko postgres VM. */
 export interface TikoIdentity {
@@ -20,6 +24,18 @@ export interface TikoIdentity {
 const STORAGE_ROOT = '/mnt/s3files/tiko_root';
 const LOCAL_PATH = '/var/lib/postgresql/tiko_local';
 export const TIKO_ENV_PATH = '/var/lib/postgresql/tiko.env';
+
+/** Seed pack every project database branches from (produced out-of-band by
+ * `tiko_branch backup` on the db_id=0 seed; already in place on S3 Files). */
+export const SEED_PACK_PATH = '/mnt/s3files/tiko_backup/0.tar.zst';
+/** The seed database id every project branches from. */
+export const SEED_DB_ID = 0;
+/**
+ * In-guest PGDATA — must match `DB="tt"` in the image's
+ * `tiko_env.sh`/`start_pg.sh`, so the canonical start script and the
+ * auto-suspend idle check keep working against the restored cluster.
+ */
+export const PGDATA = '/var/lib/postgresql/tt';
 
 /** Render the `KEY=value` file contents for the given identity. */
 export function buildTikoEnv(identity: TikoIdentity): string {
@@ -61,5 +77,41 @@ export function tikoEnvWriteCmd(content: string): string[] {
     '-c',
     `printf '%s\\n' ${lines} > ${TIKO_ENV_PATH} && ` +
       `chown postgres:postgres ${TIKO_ENV_PATH}`,
+  ];
+}
+
+/**
+ * `tiko_branch restore` argv that initializes a fresh project database by
+ * branching it from the seed pack (copy-on-write over the shared
+ * `TIKO_STORAGE_ROOT`; the branch namespace `{org}/{dbId}` is seeded from the
+ * seed db's base manifest at the backup checkpoint LSN). Run as the postgres
+ * user (restore creates PGDATA 0700 and drives `pg_ctl`, which refuses root);
+ * the in-guest `tiko_branch` wrapper sources `tiko.env` for org/storage env,
+ * so the per-project `tiko.env` must be written first and the ids passed here
+ * must match it. On success the branch is left **stopped** — start it with
+ * `start_pg.sh`. `--recovery-timeout 240` keeps the restore inside hostd's
+ * 5-minute exec timeout.
+ */
+export function branchRestoreArgv(identity: {
+  dbId: number;
+  projectId: number;
+}): string[] {
+  return [
+    'tiko_branch',
+    'restore',
+    '--pack',
+    SEED_PACK_PATH,
+    '--parent-db-id',
+    String(SEED_DB_ID),
+    '--db-id',
+    String(identity.dbId),
+    '--project-id',
+    String(identity.projectId),
+    '--pgdata',
+    PGDATA,
+    '--branch-port',
+    '5432',
+    '--recovery-timeout',
+    '240',
   ];
 }

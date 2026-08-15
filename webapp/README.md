@@ -14,11 +14,15 @@ tiko postgres guest image end to end. Three panels:
 Creating a project automatically provisions one **tiko postgres VM**: boot →
 wait for the S3 Files mount → rewrite the guest's `tiko.env` with the
 project's identity (`TIKO_DB_ID`/`TIKO_PROJECT_ID`/`TIKO_VM_ID`, unique per
-project). Database initialization will use a **backup/restore** flow (the
-image's `init_pg.sh` path is intentionally unused) — not implemented yet, so
-the project turns `ready` with the identity in place but no running database
-(the SQL panel will fail until then). Extra VMs (`ubuntu-24` / `python-3.12`
-/ `node-22`) can be added alongside.
+project) → initialize the database with `tiko_branch restore`, branching
+copy-on-write from the seed pack (`/mnt/s3files/tiko_backup/0.tar.zst`,
+db_id=0 — every project db is a branch of the seed) → start postgres via the
+image's `start_pg.sh`. The project turns `ready` with the database running, so
+the SQL panel works immediately. The tiko VM is created with **auto-suspend**:
+after 120s without client connections hostd snapshots it (the Firecracker
+process stops, consuming no CPU/memory) and the next SQL/exec request
+transparently restores it. Extra VMs (`ubuntu-24` / `python-3.12` /
+`node-22`) can be added alongside.
 
 Projects expire after a TTL (default **1 hour**) and are deleted with all
 their VMs. On shutdown (Ctrl-C) the webapp deletes every project, extra VM

@@ -9,6 +9,7 @@ import { describe, it } from 'node:test';
 
 import {
   TIKO_ENV_PATH,
+  branchRestoreArgv,
   buildTikoEnv,
   shellQuote,
   tikoEnvWriteCmd,
@@ -66,6 +67,29 @@ describe('tikoEnvWriteCmd', () => {
       .replace(/ && chown .*/, '');
     execFileSync('bash', ['-c', script]);
     assert.equal(readFileSync(`${TMP}.out`, 'utf8'), content);
+  });
+});
+
+describe('branchRestoreArgv', () => {
+  it('branches the given db/project from the seed pack (db_id=0)', () => {
+    assert.deepEqual(branchRestoreArgv({ dbId: 1001, projectId: 1000 }), [
+      'tiko_branch',
+      'restore',
+      '--pack',
+      '/mnt/s3files/tiko_backup/0.tar.zst',
+      '--parent-db-id',
+      '0',
+      '--db-id',
+      '1001',
+      '--project-id',
+      '1000',
+      '--pgdata',
+      '/var/lib/postgresql/tt',
+      '--branch-port',
+      '5432',
+      '--recovery-timeout',
+      '240',
+    ]);
   });
 });
 

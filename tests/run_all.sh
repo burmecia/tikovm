@@ -25,6 +25,7 @@ TESTS=(
 	test_block_storage.sh
 	test_s3files.sh
 	test_tiko_postgres.sh
+	test_tiko_postgres_auto_suspend.sh
 	test_node_client.sh
 )
 

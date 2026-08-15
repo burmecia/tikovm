@@ -192,13 +192,16 @@ impl Vmm for FirecrackerVmm {
             }
         }
 
-        // Image defaults: a postgres-16 VM with an auto_suspend config but
-        // no explicit idle_check_cmd gets the SQL-based idle check its
-        // image ships (scripts/rootfs/build_rootfs_postgres16.sh), so both
-        // detector paths (proxy activity + guest idle events) work without
-        // the caller naming the script. An explicit command always wins.
+        // Image defaults: a postgres-16 or tiko-postgres VM with an
+        // auto_suspend config but no explicit idle_check_cmd gets the
+        // SQL-based idle check its image ships
+        // (scripts/rootfs/build_rootfs_postgres16.sh /
+        // build_rootfs_tiko_postgres.sh — both install it at the same path),
+        // so both detector paths (proxy activity + guest idle events) work
+        // without the caller naming the script. An explicit command always
+        // wins.
         let mut config = config.clone();
-        if config.image == "postgres-16"
+        if matches!(config.image.as_str(), "postgres-16" | "tiko-postgres")
             && let Some(auto_suspend) = &mut config.auto_suspend
             && auto_suspend.idle_check_cmd.is_empty()
         {

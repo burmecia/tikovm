@@ -117,7 +117,9 @@ tests/                end-to-end tests: common.sh (shared helpers), run_all.sh
                       (full suite), test_{vm_lifecycle,workloads,exec,
                       pause_resume,snapshot_restore,networking,ports,proxy,
                       proxy_tcp,postgres_auto_suspend,auto_suspend,schedule,
-                      block_storage,s3files,node_client}.sh (each self-contained)
+                      block_storage,s3files,tiko_postgres,
+                      tiko_postgres_auto_suspend,node_client}.sh (each
+                      self-contained)
 assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext4,
                       initramfs.cpio.gz (some are build artifacts; .gitkeep'd)
 ```
@@ -219,8 +221,8 @@ assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext
   and restored transparently by the next proxied request or `/{id}/exec`
   (`Vmm::ensure_started`, single-flighted per VM). Two detector paths feed
   the same host-side gate (`FirecrackerVmm::auto_suspend_gate`: permanent
-  mode, `Started` state, no in-flight proxied requests, post-wake
-  cooldown): (a) HTTP — the proxy records per-VM activity
+  mode, `Started` state, no in-flight proxied requests, no active
+  workloads, post-wake cooldown): (a) HTTP — the proxy records per-VM activity
   (`vmm/activity.rs`); a background loop suspends VMs with exposed ports
   after `idle_timeout_secs` without a proxied request; (b) non-HTTP —
   guestd (`guestd/src/monitor.rs`) runs the VM's `idle_check_cmd` every
@@ -228,12 +230,15 @@ assets/               VM boot artifacts: vmlinux kernel, ubuntu-24.04-rootfs.ext
   vsock (`configure_auto_suspend` request / `idle` event in
   `guestd/src/proto.rs`); hostd pushes the config on every vsock
   (re)connect and proactively connects after start/restore when a check
-  command is configured. The postgres-16 image ships a SQL-based check
-  (`/usr/local/bin/tikovm-pg-idle-check`: idle = no client connections and
-  no active queries in `pg_stat_activity`); hostd defaults
-  `idle_check_cmd` to it for postgres-16 VMs that set `auto_suspend`
-  without an explicit command. Non-`permanent` VMs with `auto_suspend`
-  are rejected at create time.
+  command is configured. The postgres-16 and tiko-postgres images each
+  ship a SQL-based check at `/usr/local/bin/tikovm-pg-idle-check` (idle
+  = no client connections in `pg_stat_activity`; the postgres-16 variant
+  also counts active queries, while the tiko-postgres variant counts
+  client backends only — the tikoworker WAL streaming keeps a permanent
+  walsender whose state can read 'active'); hostd defaults
+  `idle_check_cmd` to it for postgres-16 and tiko-postgres VMs that set
+  `auto_suspend` without an explicit command. Non-`permanent` VMs with
+  `auto_suspend` are rejected at create time.
 - Schedule mode: a VM created with `mode: "schedule"` plus `cmd` and
   `cron_schedule` (validated at create time; rejected for other modes, as
   are `cmd`-less/cron-less schedule VMs) is not started on creation. A cron
@@ -306,7 +311,8 @@ There are no Rust integration tests and no CI configuration. Testing is:
    Firecracker binary. It runs the self-contained `tests/test_*.sh` files
    (vm_lifecycle, pause_resume, snapshot_restore, workloads, exec,
    networking, ports, proxy, proxy_tcp, postgres_auto_suspend,
-   auto_suspend, schedule, block_storage, s3files, node_client),
+   auto_suspend, schedule, block_storage, s3files, tiko_postgres,
+   tiko_postgres_auto_suspend, node_client),
    each of which starts hostd via `run_hostd.sh` and exercises its slice of
    the API surface with curl/jq: VM create/get/list/delete, pause/
    resume, snapshot/restore, workload run/stop/logs, per-project bridge and
@@ -322,6 +328,9 @@ There are no Rust integration tests and no CI configuration. Testing is:
    library against the live hostd. `test_s3files.sh` needs the AWS-backed
    `s3files-rootfs.ext4` image (built from a filled-in
    `scripts/rootfs/s3files-config`); it skips when the image is absent.
+   `test_tiko_postgres.sh` and `test_tiko_postgres_auto_suspend.sh` likewise
+   need the AWS- and tiko-build-backed `tiko-postgres-rootfs.ext4` image and
+   skip when it is absent.
 
 ## Asset (guest image) build process
 
@@ -393,7 +402,12 @@ blindly:
   ($libdir), bakes in the runtime scripts (`init_pg.sh`, `start_pg.sh`,
   `tiko_env.sh`, `postgresql.tiko.conf`) and VM-0 identity defaults in
   `/var/lib/postgresql/tiko.env`, and enables a `s3files-postgres-owner`
-  oneshot that chowns `/mnt/s3files` to postgres after the boot mount.
+  oneshot that chowns `/mnt/s3files` to postgres after the boot mount. The
+  image also ships `/usr/local/bin/tikovm-pg-idle-check`, the SQL-based
+  auto-suspend idle check hostd defaults `idle_check_cmd` to for
+  tiko-postgres VMs (same path as the postgres-16 image's check, but
+  counting client backends only — the tikoworker WAL streaming keeps a
+  permanent walsender whose state can read 'active').
 - `build_initramfs.sh` — packs busybox + `initramfs_init.sh` into
   `initramfs.cpio.gz` (newc cpio, gzipped). `initramfs.cpio.gz` is
   git-ignored as a build artifact.

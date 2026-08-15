@@ -19,6 +19,9 @@
 # sources tiko_env.sh first. Data lives on the S3 Files mount at /mnt/s3files
 # (TIKO_STORAGE_ROOT), which is mounted at boot by the shared s3files setup; a
 # oneshot service chowns the mount root to the postgres user after it comes up.
+# The image also ships /usr/local/bin/tikovm-pg-idle-check, the SQL-based
+# auto-suspend idle check hostd defaults idle_check_cmd to for tiko-postgres
+# VMs.
 #
 # Prerequisites (not run here — this script only consumes the build outputs):
 #   - tiko's build_postgres.sh has run, producing $TIKO_ROOT/target/pg-install
@@ -143,6 +146,28 @@ TIKO_LOCAL_PATH=/var/lib/postgresql/tiko_local
 TIKO_ENV
 	sudo chown "${pg_uid}:${pg_gid}" "${pghome}/tiko.env"
 	sudo chown -R "${pg_uid}:${pg_gid}" "${pghome}"
+
+	# The auto-suspend idle check guestd runs when the VM's
+	# auto_suspend.idle_check_cmd names it (hostd fills this in by default
+	# for tiko-postgres VMs with an auto_suspend config).
+	sudo tee "${rootfs}/usr/local/bin/tikovm-pg-idle-check" > /dev/null << 'EOF'
+#!/bin/bash
+# tikovm auto-suspend idle check for the Tiko PostgreSQL: exit 0 ("idle")
+# when the server has no client backends; anything else (open connections,
+# a psql error, the server still starting) exits non-zero. Only client
+# backends are counted: the tikoworker WAL streaming keeps a permanent
+# walsender whose state can read 'active', so the postgres-16 predicate
+# (which includes state = 'active') would never report idle here.
+#
+# Runs over the local socket (the source build's default /tmp socket dir) as
+# the postgres OS user; initdb's default local trust needs no password. The
+# check's own psql session shows up in pg_stat_activity as a client backend,
+# so it must exclude its own pid. A psql failure (e.g. the server is still
+# starting) counts as "not idle" — the safe direction.
+count="$(runuser -u postgres -- /usr/local/bin/psql -Atqc "select count(*) from pg_stat_activity where pid <> pg_backend_pid() and backend_type = 'client backend'")" || exit 1
+[ "${count}" = "0" ]
+EOF
+	sudo chmod 0755 "${rootfs}/usr/local/bin/tikovm-pg-idle-check"
 
 	# /mnt/s3files is mounted at boot by the s3files setup; its mounted root
 	# inode is owned by root, so chown the mounted root after it comes up so

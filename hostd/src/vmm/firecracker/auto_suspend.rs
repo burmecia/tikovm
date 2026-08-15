@@ -154,14 +154,19 @@ impl FirecrackerVmm {
 
     /// The gate every auto-suspend trigger passes through: the VM must be a
     /// started permanent VM with an `auto_suspend` config, have no in-flight
-    /// proxied requests, and be past the post-wake cooldown (so a restored
-    /// VM cannot flap straight back down).
+    /// proxied requests and no active workloads (snapshotting mid-workload
+    /// would kill the guest process and strand the workload), and be past
+    /// the post-wake cooldown (so a restored VM cannot flap straight back
+    /// down).
     fn auto_suspend_gate(&self, vm_id: &VmId) -> Result<bool> {
         let idle_timeout = {
             let vms = self.vms.lock()?;
             let Some(entry) = vms.get(vm_id) else {
                 return Ok(false);
             };
+            if entry.workloads.values().any(|w| w.is_active()) {
+                return Ok(false);
+            }
             let instance = entry.instance.lock()?;
             if instance.state != VmState::Started || instance.vm_config.mode != VmMode::Permanent {
                 return Ok(false);

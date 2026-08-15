@@ -26,7 +26,14 @@ export type VmState =
   | 'destroyed';
 
 /** Known guest images. Any string is accepted (forward compat); the union is for autocomplete. */
-export type VmImage = 'ubuntu-24' | 'python-3.12' | 'node-22' | 'postgres-16' | (string & {});
+export type VmImage =
+  | 'ubuntu-24'
+  | 'python-3.12'
+  | 'node-22'
+  | 'postgres-16'
+  | 's3files'
+  | 'tiko-postgres'
+  | (string & {});
 
 export interface ExposedPort {
   port: number;
@@ -49,10 +56,23 @@ export interface VmNet {
   guest_mac: string;
 }
 
+/** Auto-suspend config as hostd stores and returns it (all fields resolved). */
 export interface AutoSuspendConfig {
   idle_timeout_secs: number;
   idle_check_cmd: string[];
   check_interval_secs: number;
+}
+
+/**
+ * Create-VM form of AutoSuspendConfig: only `idle_timeout_secs` is required;
+ * hostd defaults `idle_check_cmd` to [] (overridden again to the image's
+ * SQL-based check for postgres-16/tiko-postgres VMs) and
+ * `check_interval_secs` to 30.
+ */
+export interface AutoSuspendCreateConfig {
+  idle_timeout_secs: number;
+  idle_check_cmd?: string[];
+  check_interval_secs?: number;
 }
 
 export interface BlockStorageConfig {
@@ -125,7 +145,7 @@ export interface VmCreateConfig {
   cron_schedule?: string | null;
   timeout_secs?: number | null;
   tags?: string[];
-  auto_suspend?: AutoSuspendConfig | null;
+  auto_suspend?: AutoSuspendCreateConfig | null;
   block_storage?: BlockStorageConfig | null;
 }
 

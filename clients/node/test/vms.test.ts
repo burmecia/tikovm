@@ -140,6 +140,29 @@ describe('vms.create()', () => {
     });
   });
 
+  it('sends auto_suspend with only idle_timeout_secs (hostd defaults the rest)', async () => {
+    const { baseUrl, requests } = await mock((req, res) =>
+      json(res, 201, { status: 'created', payload: req.body, id: 'vm-2b' }),
+    );
+    await (await clientFor(baseUrl)).vms.create({
+      name: 'tiko-db',
+      project_id: 7,
+      image: 'tiko-postgres',
+      mode: 'permanent',
+      auto_suspend: { idle_timeout_secs: 300 },
+    });
+
+    const body = requests[0]!.body as Record<string, unknown>;
+    // The client resolves hostd's defaults: empty idle_check_cmd lets hostd
+    // apply the image's idle check for postgres images; 30s is hostd's
+    // default check interval.
+    assert.deepEqual(body.auto_suspend, {
+      idle_timeout_secs: 300,
+      idle_check_cmd: [],
+      check_interval_secs: 30,
+    });
+  });
+
   it('includes schedule-mode fields', async () => {
     const { baseUrl, requests } = await mock((req, res) =>
       json(res, 201, { status: 'created', payload: req.body, id: 'vm-3' }),

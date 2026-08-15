@@ -17,6 +17,7 @@ export {
 } from './errors.js';
 export type {
   AutoSuspendConfig,
+  AutoSuspendCreateConfig,
   BlockStorageConfig,
   CreateVmResponse,
   EnvVar,

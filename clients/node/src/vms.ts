@@ -126,7 +126,16 @@ export function toVmConfig(config: VmCreateConfig): VmConfig {
     cron_schedule: config.cron_schedule ?? null,
     timeout_secs: config.timeout_secs ?? null,
     tags: config.tags ?? [],
-    auto_suspend: config.auto_suspend ?? null,
+    auto_suspend: config.auto_suspend
+      ? {
+          // Empty idle_check_cmd lets hostd apply the image default (the
+          // SQL-based check for postgres-16/tiko-postgres VMs); 30s is
+          // hostd's default check interval.
+          idle_check_cmd: [],
+          check_interval_secs: 30,
+          ...config.auto_suspend,
+        }
+      : null,
     block_storage: config.block_storage ?? null,
   };
 }

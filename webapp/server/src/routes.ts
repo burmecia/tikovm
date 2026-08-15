@@ -233,34 +233,6 @@ export function apiRouter(deps: ApiDeps): Router {
     }),
   );
 
-  const LIFECYCLE: Record<string, (id: string) => Promise<{ state?: string }>> = {
-    pause: (id) => client.vms.pause(id),
-    resume: (id) => client.vms.resume(id),
-    restore: (id) => client.vms.restore(id),
-    // snapshot leaves the VM suspended; respond with that state directly.
-    snapshot: async (id) => {
-      await client.vms.snapshot(id);
-      return { state: 'suspended' };
-    },
-  };
-
-  router.post(
-    '/vms/:vmId/lifecycle',
-    handle(async (req, res) => {
-      const vmId = req.params.vmId;
-      if (!registry.vmOwner(vmId)) {
-        return fail(res, 404, `VM ${vmId} is not managed by this webapp`);
-      }
-      const action = String(req.body?.action ?? '');
-      const op = LIFECYCLE[action];
-      if (!op) {
-        return fail(res, 400, `action must be one of: ${Object.keys(LIFECYCLE).join(', ')}`);
-      }
-      const result = await op(vmId);
-      res.json({ vmId, state: result.state ?? 'unknown' });
-    }),
-  );
-
   router.delete(
     '/vms/:vmId',
     handle(async (req, res) => {
@@ -268,6 +240,11 @@ export function apiRouter(deps: ApiDeps): Router {
       const owner = registry.vmOwner(vmId);
       if (!owner) {
         return fail(res, 404, `VM ${vmId} is not managed by this webapp`);
+      }
+      // The project's tiko postgres VM goes away only with the project.
+      const entry = owner.vms.find((v) => v.vmId === vmId);
+      if (entry?.kind === 'tiko') {
+        return fail(res, 400, 'the tiko postgres VM is deleted with its project');
       }
       await deleteVmIfExists(client, vmId);
       registry.removeVm(vmId);

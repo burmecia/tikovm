@@ -6,7 +6,6 @@ import { stateClass } from './TopPanel';
 interface Props {
   vm: OverviewVm;
   project: Project | undefined;
-  onLifecycle: (action: string) => void;
   onDelete: () => void;
   onExec: (cmd: string) => Promise<ExecResult | null>;
   onSql: (sql: string) => Promise<ExecResult | null>;
@@ -16,7 +15,6 @@ interface Props {
 export default function RightPanel({
   vm,
   project,
-  onLifecycle,
   onDelete,
   onExec,
   onSql,
@@ -26,11 +24,6 @@ export default function RightPanel({
   const [output, setOutput] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const isTiko = vm.kind === 'tiko';
-
-  const canPause = vm.state === 'started';
-  const canResume = vm.state === 'paused';
-  const canSnapshot = vm.state === 'started';
-  const canRestore = vm.state === 'suspended';
 
   const runAndShow = async (what: string, fn: () => Promise<ExecResult | null>) => {
     setBusy(true);
@@ -43,9 +36,7 @@ export default function RightPanel({
   return (
     <section className="panel right">
       <div className="panel-title vm-title">
-        <span>
-          {vm.name} <span className="kind">{vm.kind}</span>
-        </span>
+        <span>{vm.name}</span>
         <span className={`badge ${stateClass(vm.state)}`}>{vm.state}</span>
       </div>
 
@@ -80,24 +71,21 @@ export default function RightPanel({
         )}
       </div>
 
-      <div className="section-title">lifecycle</div>
-      <div className="button-row">
-        <button disabled={!canPause} onClick={() => onLifecycle('pause')}>
-          pause
-        </button>
-        <button disabled={!canResume} onClick={() => onLifecycle('resume')}>
-          resume
-        </button>
-        <button disabled={!canSnapshot} onClick={() => onLifecycle('snapshot')}>
-          snapshot
-        </button>
-        <button disabled={!canRestore} onClick={() => onLifecycle('restore')}>
-          restore
-        </button>
-        <button className="danger" onClick={onDelete}>
-          delete VM
-        </button>
-      </div>
+      {isTiko ? (
+        <div className="hint dim">
+          auto-suspends when idle and wakes on the next exec or SQL request;
+          deleted together with its project
+        </div>
+      ) : (
+        <>
+          <div className="section-title">actions</div>
+          <div className="button-row">
+            <button className="danger" onClick={onDelete}>
+              delete VM
+            </button>
+          </div>
+        </>
+      )}
 
       <div className="section-title">exec in guest</div>
       <form
@@ -147,8 +135,8 @@ export default function RightPanel({
             </button>
           </form>
           <div className="hint dim">
-            psql as postgres on 127.0.0.1:5432 inside the VM — needs a database
-            initialized first (backup/restore init, coming)
+            psql as postgres on 127.0.0.1:5432 inside the VM; a suspended VM
+            is woken automatically
           </div>
         </>
       )}

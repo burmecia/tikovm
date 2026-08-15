@@ -5,9 +5,10 @@ tiko postgres guest image end to end. Three panels:
 
 - **top** — vmtop-style live inventory of all demo VMs (1s poll)
 - **left** — projects (create/delete), each with its nested VM list
-- **right** — operations on the selected VM: lifecycle (pause / resume /
-  snapshot / restore / delete), exec-in-guest, and a SQL console for the
-  project's tiko postgres VM
+- **right** — operations on the selected VM: exec-in-guest, a SQL console
+  for the project's tiko postgres VM, and delete for extra VMs (the tiko VM
+  goes away with its project; it auto-suspends when idle and wakes on the
+  next request)
 
 ## What a "project" is
 

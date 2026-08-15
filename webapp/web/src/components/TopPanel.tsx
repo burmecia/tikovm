@@ -39,7 +39,6 @@ export default function TopPanel({ vms, selectedVmId, onSelect }: Props) {
               <th>VM</th>
               <th>NAME</th>
               <th>PROJECT</th>
-              <th>KIND</th>
               <th>IMAGE</th>
               <th>IP</th>
               <th>CPU</th>
@@ -50,7 +49,7 @@ export default function TopPanel({ vms, selectedVmId, onSelect }: Props) {
           <tbody>
             {vms.length === 0 && (
               <tr>
-                <td colSpan={10} className="empty">
+                <td colSpan={9} className="empty">
                   no VMs — create a project to boot a tiko postgres VM
                 </td>
               </tr>
@@ -67,9 +66,6 @@ export default function TopPanel({ vms, selectedVmId, onSelect }: Props) {
                 <td className="mono">{vm.vmId}</td>
                 <td>{vm.name}</td>
                 <td className="mono">#{vm.projectId}</td>
-                <td>
-                  <span className={`kind ${vm.kind}`}>{vm.kind}</span>
-                </td>
                 <td>{vm.image}</td>
                 <td className="mono">{vm.guestIp ?? '—'}</td>
                 <td className="num">{vm.cpus}</td>

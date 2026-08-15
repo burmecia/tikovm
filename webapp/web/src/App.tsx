@@ -118,9 +118,6 @@ export default function App() {
             key={selectedVm.vmId}
             vm={selectedVm}
             project={selectedProject}
-            onLifecycle={(action) =>
-              run(() => api.lifecycle(selectedVm.vmId, action), `${action} done`)
-            }
             onDelete={() => {
               setSelectedVmId(null);
               void run(() => api.deleteVm(selectedVm.vmId), 'VM deleted');

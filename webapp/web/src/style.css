@@ -246,14 +246,6 @@ body {
   }
 }
 
-.kind {
-  color: var(--info);
-}
-
-.kind.tiko {
-  color: var(--accent);
-}
-
 /* ── left panel: projects ───────────────────────────────────────────── */
 
 .new-project {

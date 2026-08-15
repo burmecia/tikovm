@@ -44,12 +44,6 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  lifecycle: (vmId: string, action: string) =>
-    call<{ vmId: string; state: string }>(`/api/demo/vms/${vmId}/lifecycle`, {
-      method: 'POST',
-      body: JSON.stringify({ action }),
-    }),
-
   deleteVm: (vmId: string) =>
     call<void>(`/api/demo/vms/${vmId}`, { method: 'DELETE' }),
 

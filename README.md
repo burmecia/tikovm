@@ -37,11 +37,6 @@ Tiko database VM that freezes when idle and wakes on the first connection.
   Postgres wire protocol on one listener, with JWT access scoped per VM and
   port. `psql "host=<proxy> ... options='-c tikovm_token=<jwt>'"` connects
   straight into a database VM; unexposing a port kills existing tokens.
-- 💾 **Chunked block storage on S3.** A VM can get a dedicated block device
-  backed by chunk files on an [S3 Files](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-files.html)
-  NFS mount, served by a per-VM ublk worker. A guest fsync becomes one NFS
-  COMMIT per dirty chunk; a worker crash looks to the guest exactly like a
-  disk power blip, and the device recovers transparently.
 - ⏰ **Cron-mode VMs.** Give a VM a cron schedule and it wakes up, runs its
   command as a logged workload, and goes back to sleep — between runs it
   consumes nothing.
@@ -59,7 +54,7 @@ flowchart TB
 
   subgraph Host ["🖥️ Host (KVM, root)"]
     direction TB
-    Hostd["<b>hostd</b><br/><small>REST API :3000 · proxy :8080 · networking · storage</small>"]
+    Hostd["<b>hostd</b><br/><small>REST API :3000 · proxy :8080 · networking</small>"]
     Webapp["<b>webapp :4000</b><br/><small>projects · lambdas · PostgREST</small>"]
     Vmtop["<b>vmtop</b><br/><small>live TUI</small>"]
   end
@@ -78,7 +73,7 @@ flowchart TB
     Guest2 --> PG2
   end
 
-  S3[("🪣<br/><b>S3-compatible storage</b><br/>(S3 Files)<br/><small>block chunks · seed packs</small>")]
+  S3[("🪣<br/><b>S3-compatible storage</b><br/>(S3 Files)<br/><small>database files · seed packs</small>")]
 
   Client -->|REST + Bearer| Hostd
   Browser --> Webapp
@@ -87,7 +82,6 @@ flowchart TB
   Psql -->|HTTP / PG wire + JWT| Hostd
   Hostd <-->|vsock| Guest1
   Hostd <-->|vsock| Guest2
-  Hostd ==>|ublk chunks · NFS| S3
   PG2 ==>|data · WAL · NFS| S3
 
   classDef client fill:#fff7ed,stroke:#f97316,stroke-width:2px,color:#9a3412
@@ -107,8 +101,8 @@ flowchart TB
 ```
 
 - **hostd** — the daemon. REST API, Firecracker driver, per-project bridges
-  and NAT, the JWT-authenticated proxy, chunked block storage, auto-suspend,
-  and the cron scheduler.
+  and NAT, the JWT-authenticated proxy, auto-suspend, and the cron
+  scheduler.
 - **guestd** — the guest agent. A 1 MB Rust binary on vsock that runs
   workloads, streams their output back, and reports idleness. No SSH, no
   guest network dependency.
@@ -125,7 +119,7 @@ flowchart TB
 
 ```
 tikovm/
-├── hostd/          # the daemon: REST API, VMM, networking, storage, proxy
+├── hostd/          # the daemon: REST API, VMM, networking, proxy
 ├── guestd/         # the guest agent: vsock listener, workloads, idle detector
 ├── vmtop/          # top-style TUI for the VM inventory
 ├── webapp/         # demo platform: projects, lambdas, PostgREST (Express + React)
@@ -223,7 +217,7 @@ everything suspends itself.
 
 ```bash
 ./tests/run_all.sh   # boots real VMs: lifecycle, networking, proxy,
-                     # auto-suspend, cron mode, block storage, ...
+                     # auto-suspend, cron mode, the Node client, ...
 ```
 
 ---

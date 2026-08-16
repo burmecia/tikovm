@@ -43,6 +43,21 @@ export async function rawListVms(cfg: Config): Promise<RawVmInstance[]> {
   return (await res.json()) as RawVmInstance[];
 }
 
+/**
+ * Raw `GET /api/vms/:id` — used where the Vm wrapper's surface is too
+ * narrow (e.g. reading `net.guest_ip` of a suspended VM, which stays
+ * host-side state).
+ */
+export async function rawGetVm(cfg: Config, vmId: string): Promise<RawVmInstance> {
+  const res = await fetch(`${cfg.hostdUrl}/api/vms/${vmId}`, {
+    headers: { Authorization: `Bearer ${cfg.hostdToken}` },
+  });
+  if (!res.ok) {
+    throw new Error(`hostd GET /api/vms/${vmId} failed: ${res.status} ${await res.text()}`);
+  }
+  return (await res.json()) as RawVmInstance;
+}
+
 /** Poll until the VM reaches `target` (fails on timeout, not on other states). */
 export async function waitForState(
   client: Tikovm,

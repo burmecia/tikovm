@@ -100,9 +100,19 @@ export default function App() {
           onSelect={setSelectedVmId}
           onCreateProject={(name) => run(() => api.createProject(name), 'project creation started')}
           onDeleteProject={(id) => run(() => api.deleteProject(id), `project ${id} deleted`)}
-          onCreateVm={(projectId, name, image) =>
-            run(() => api.createVm(projectId, { name, image }), 'VM creation started')
-          }
+          onCreateVm={(projectId, name, image) => {
+            if (image.startsWith('lambda:')) {
+              return run(
+                () =>
+                  api.createLambda(projectId, {
+                    name: name || image.slice('lambda:'.length),
+                    language: image.slice('lambda:'.length),
+                  }),
+                'lambda deploy started — follow it in the project list',
+              );
+            }
+            return run(() => api.createVm(projectId, { name, image }), 'VM creation started');
+          }}
         />
         {selectedVm ? (
           <RightPanel
@@ -123,6 +133,52 @@ export default function App() {
                 'branch creation started — follow the new project in the list',
               )
             }
+            onLoadLambda={() =>
+              api.getLambda(selectedVm.vmId).catch((err) => {
+                setBanner({
+                  kind: 'error',
+                  text: err instanceof Error ? err.message : String(err),
+                });
+                return null;
+              })
+            }
+            onSaveLambda={async (source) => {
+              try {
+                await api.saveLambda(selectedVm.vmId, source);
+                setBanner({ kind: 'info', text: 'lambda saved — live on the next invoke' });
+                return true;
+              } catch (err) {
+                setBanner({
+                  kind: 'error',
+                  text: err instanceof Error ? err.message : String(err),
+                });
+                return false;
+              } finally {
+                void refresh();
+              }
+            }}
+            onInvokeLambda={async (body) => {
+              const slug = selectedVm.lambda?.slug;
+              if (!slug) {
+                return null;
+              }
+              try {
+                const result = await api.invokeLambda(slug, body);
+                setBanner({
+                  kind: 'info',
+                  text: `lambda ${slug} → ${result.status} in ${result.durationMs}ms`,
+                });
+                return result;
+              } catch (err) {
+                setBanner({
+                  kind: 'error',
+                  text: err instanceof Error ? err.message : String(err),
+                });
+                return null;
+              } finally {
+                void refresh();
+              }
+            }}
             onCopyConnStr={() => {
               void (async () => {
                 try {

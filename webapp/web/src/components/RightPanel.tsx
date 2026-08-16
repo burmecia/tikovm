@@ -1,6 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { formatAge } from '../format';
-import type { ExecResult, OverviewVm, Project } from '../types';
+import type {
+  ExecResult,
+  LambdaDetail,
+  LambdaInvokeResult,
+  OverviewVm,
+  Project,
+} from '../types';
 import { stateClass } from './TopPanel';
 
 interface Props {
@@ -11,6 +17,9 @@ interface Props {
   onSql: (sql: string) => Promise<ExecResult | null>;
   onCopyConnStr: () => void;
   onBranch: (name: string) => void;
+  onLoadLambda: () => Promise<LambdaDetail | null>;
+  onSaveLambda: (source: string) => Promise<boolean>;
+  onInvokeLambda: (body: string) => Promise<LambdaInvokeResult | null>;
 }
 
 /** Right panel: operations on the selected VM. */
@@ -22,13 +31,34 @@ export default function RightPanel({
   onSql,
   onCopyConnStr,
   onBranch,
+  onLoadLambda,
+  onSaveLambda,
+  onInvokeLambda,
 }: Props) {
   const [cmd, setCmd] = useState('uname -a');
   const [sql, setSql] = useState('select version();');
   const [branchName, setBranchName] = useState('');
   const [output, setOutput] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [lambdaSrc, setLambdaSrc] = useState<string | null>(null);
+  const [invokeBody, setInvokeBody] = useState('');
+  const [curlCopied, setCurlCopied] = useState(false);
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
   const isTiko = vm.kind === 'tiko';
+  const isLambda = vm.kind === 'lambda';
+  const lambda = vm.lambda;
+
+  // Load the deployed handler source once per selected lambda VM.
+  useEffect(() => {
+    if (isLambda) {
+      void onLoadLambda().then((d) => {
+        if (d) {
+          setLambdaSrc(d.source);
+        }
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLambda]);
 
   const runAndShow = async (what: string, fn: () => Promise<ExecResult | null>) => {
     setBusy(true);
@@ -71,6 +101,103 @@ export default function RightPanel({
           </>
         )}
       </div>
+
+      {isLambda && lambda && (
+        <>
+          <div className="section-title">lambda function ({lambda.language})</div>
+          {lambda.status !== 'ready' && (
+            <div className={lambda.status === 'error' ? 'project-error' : 'hint dim'}>
+              {lambda.status === 'error'
+                ? `deploy failed: ${lambda.error ?? 'unknown error'}`
+                : `deploying: ${lambda.step || 'queued'}…`}
+            </div>
+          )}
+          <div className="button-row">
+            <button
+              className={curlCopied ? 'copied' : ''}
+              onClick={() => {
+                const url = `${window.location.origin}/api/demo/f/${lambda.slug}`;
+                void navigator.clipboard.writeText(
+                  `curl -X POST ${url} -d '{"hello":"world"}'`,
+                );
+                setCurlCopied(true);
+                setTimeout(() => setCurlCopied(false), 1500);
+              }}
+              title="copy a curl command that invokes the lambda from anywhere"
+            >
+              {curlCopied ? 'copied ✓' : 'copy curl command'}
+            </button>
+          </div>
+          <div className="hint mono dim">
+            {window.location.origin}/api/demo/f/{lambda.slug}
+          </div>
+          <textarea
+            className="mono lambda-src"
+            rows={14}
+            value={lambdaSrc ?? '// loading…'}
+            onChange={(e) => setLambdaSrc(e.target.value)}
+            disabled={lambda.status !== 'ready' || lambdaSrc === null}
+            spellCheck={false}
+          />
+          <div className="button-row">
+            <button
+              className={saveState === 'saved' ? 'copied' : ''}
+              disabled={
+                saveState === 'saving' || lambdaSrc === null || lambda.status !== 'ready'
+              }
+              onClick={() => {
+                setSaveState('saving');
+                void onSaveLambda(lambdaSrc ?? '').then((ok) => {
+                  setSaveState(ok ? 'saved' : 'idle');
+                  if (ok) {
+                    setTimeout(() => setSaveState('idle'), 1500);
+                  }
+                });
+              }}
+              title="syntax-checked in the guest; live on the next invoke"
+            >
+              {saveState === 'saving'
+                ? 'deploying…'
+                : saveState === 'saved'
+                  ? 'saved ✓'
+                  : 'save & deploy'}
+            </button>
+          </div>
+          <form
+            className="exec-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (busy || lambda.status !== 'ready') {
+                return;
+              }
+              setBusy(true);
+              void onInvokeLambda(invokeBody)
+                .then((r) => {
+                  if (r) {
+                    setOutput(
+                      `POST /api/demo/f/${lambda.slug}\n→ ${r.status} in ${r.durationMs}ms\n${r.body}`,
+                    );
+                  }
+                })
+                .finally(() => setBusy(false));
+            }}
+          >
+            <input
+              className="mono"
+              value={invokeBody}
+              onChange={(e) => setInvokeBody(e.target.value)}
+              placeholder="optional request body"
+            />
+            <button type="submit" disabled={busy || lambda.status !== 'ready'}>
+              invoke
+            </button>
+          </form>
+          <div className="hint dim">
+            the VM auto-suspends after 2 minutes without a request; the next
+            invoke wakes it (cold start — watch the duration)
+          </div>
+        </>
+      )}
 
       {isTiko && (
         <>
@@ -128,29 +255,33 @@ export default function RightPanel({
         </>
       )}
 
-      <div className="section-title">exec in guest</div>
-      <form
-        className="exec-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (cmd.trim() && !busy) {
-            void runAndShow(cmd, () => onExec(cmd));
-          }
-        }}
-      >
-        <input
-          className="mono"
-          value={cmd}
-          onChange={(e) => setCmd(e.target.value)}
-          placeholder="command to run inside the VM"
-        />
-        <button type="submit" disabled={busy || vm.state === 'destroyed'}>
-          run
-        </button>
-      </form>
-      <div className="hint dim">
-        runs as root via a login shell; a suspended VM is woken automatically
-      </div>
+      {!isTiko && !isLambda && (
+        <>
+          <div className="section-title">exec in guest</div>
+          <form
+            className="exec-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (cmd.trim() && !busy) {
+                void runAndShow(cmd, () => onExec(cmd));
+              }
+            }}
+          >
+            <input
+              className="mono"
+              value={cmd}
+              onChange={(e) => setCmd(e.target.value)}
+              placeholder="command to run inside the VM"
+            />
+            <button type="submit" disabled={busy || vm.state === 'destroyed'}>
+              run
+            </button>
+          </form>
+          <div className="hint dim">
+            runs as root via a login shell; a suspended VM is woken automatically
+          </div>
+        </>
+      )}
 
       {isTiko && (
         <>

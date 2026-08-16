@@ -1,7 +1,13 @@
 // Typed fetch layer for the webapp's /api/demo endpoints. All errors come
 // back as Error with the server's message (uniform {error:{message}} body).
 
-import type { ExecResult, Overview, Project } from './types';
+import type {
+  ExecResult,
+  LambdaDetail,
+  LambdaInvokeResult,
+  Overview,
+  Project,
+} from './types';
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -70,4 +76,34 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ sql }),
     }),
+
+  createLambda: (projectId: number, body: { name: string; language: string }) =>
+    call<Project>(`/api/demo/projects/${projectId}/lambdas`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  getLambda: (vmId: string) => call<LambdaDetail>(`/api/demo/vms/${vmId}/lambda`),
+
+  saveLambda: (vmId: string, source: string) =>
+    call<{ ok: boolean }>(`/api/demo/vms/${vmId}/lambda`, {
+      method: 'PUT',
+      body: JSON.stringify({ source }),
+    }),
+
+  // The lambda's reply is an arbitrary body, not the uniform JSON shape —
+  // bypass `call` and surface status/body/duration as-is.
+  invokeLambda: async (slug: string, body: string): Promise<LambdaInvokeResult> => {
+    const started = Date.now();
+    const res = await fetch(`/api/demo/f/${slug}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body,
+    });
+    return {
+      status: res.status,
+      body: await res.text(),
+      durationMs: Number(res.headers.get('x-lambda-duration-ms')) || Date.now() - started,
+    };
+  },
 };

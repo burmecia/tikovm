@@ -59,8 +59,10 @@ export const TIKO_IMAGE = 'tiko-postgres';
  * the proxy can forward psql connections (JWT in `tikovm_token`). */
 export const TIKO_PG_PORT = 5432;
 
-/** Images users may add as extra (non-database) VMs to a project. */
-export const EXTRA_IMAGES = ['ubuntu-24', 'python-3.12', 'node-22'] as const;
+/** Images users may add as extra (non-database) VMs to a project. The
+ * node-22/python-3.12 images are deliberately absent: they are offered as
+ * lambda functions instead (see lambda.ts). */
+export const EXTRA_IMAGES = ['ubuntu-24'] as const;
 export type ExtraImage = (typeof EXTRA_IMAGES)[number];
 
 /** Provision a plain project's tiko postgres VM (branched from the seed

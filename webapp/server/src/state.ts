@@ -20,12 +20,51 @@
 
 export type ProjectStatus = 'provisioning' | 'ready' | 'error' | 'deleting';
 
+/** Runtime language of a lambda VM (selects the guest image + wrapper). */
+export type LambdaLanguage = 'node' | 'python';
+
+/** Deploy state of a lambda, tracked per VM like a project's status. */
+export type LambdaStatus = 'deploying' | 'ready' | 'error';
+
+/** Lambda-function metadata attached to a `kind: 'lambda'` VM entry. */
+export interface LambdaMeta {
+  /** URL slug the function is invoked at (`/api/demo/f/<slug>`); immutable. */
+  slug: string;
+  language: LambdaLanguage;
+  status: LambdaStatus;
+  /** Human-readable current deploy step; empty when idle. */
+  step: string;
+  error: string | undefined;
+  /** Last successfully deployed handler source (mirror of the guest file). */
+  source: string;
+}
+
 /** A VM tracked under a project. `kind: 'tiko'` marks the project's database. */
 export interface ProjectVmEntry {
   vmId: string;
   name: string;
   image: string;
-  kind: 'tiko' | 'extra';
+  kind: 'tiko' | 'extra' | 'lambda';
+  /** Set for `kind: 'lambda'` entries. */
+  lambda?: LambdaMeta;
+}
+
+/** Slug validity: lowercase dns-label-ish, derived from the function name. */
+export const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+/**
+ * Derive a URL slug from a function name: lowercase, non-alphanumerics
+ * collapsed to dashes, edges trimmed. Returns null when nothing usable
+ * remains (e.g. an all-punctuation name).
+ */
+export function toSlug(name: string): string | null {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 63)
+    .replace(/-+$/g, '');
+  return SLUG_RE.test(slug) ? slug : null;
 }
 
 /** Where a branch project's database was copied from. */
@@ -113,6 +152,24 @@ export class Registry {
   /** The project that owns the given hostd vm id, if any. */
   vmOwner(vmId: string): Project | undefined {
     return this.list().find((p) => p.vms.some((v) => v.vmId === vmId));
+  }
+
+  /** The VM entry owning the given lambda slug, if any (slugs are unique). */
+  lambdaBySlug(
+    slug: string,
+  ): { project: Project; vm: ProjectVmEntry } | undefined {
+    for (const p of this.#projects.values()) {
+      const vm = p.vms.find((v) => v.lambda?.slug === slug);
+      if (vm) {
+        return { project: p, vm };
+      }
+    }
+    return undefined;
+  }
+
+  /** Whether a lambda slug is already taken. */
+  slugTaken(slug: string): boolean {
+    return this.lambdaBySlug(slug) !== undefined;
   }
 
   /**

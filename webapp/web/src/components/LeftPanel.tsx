@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { formatCountdown } from '../format';
-import { EXTRA_IMAGES } from '../types';
+import { EXTRA_IMAGES, LAMBDA_OPTIONS } from '../types';
 import type { Project, ProjectStatus } from '../types';
 import { stateClass } from './TopPanel';
 
@@ -107,14 +107,29 @@ export default function LeftPanel({
                 const state = vmStates[vm.vmId] ?? 'unknown';
                 return (
                   <li
-                    key={vm.vmId}
-                    className={vm.vmId === selectedVmId ? 'selected' : ''}
-                    onClick={() => onSelect(vm.vmId)}
+                    key={vm.vmId || `pending-${vm.name}`}
+                    className={vm.vmId && vm.vmId === selectedVmId ? 'selected' : ''}
+                    onClick={() => vm.vmId && onSelect(vm.vmId)}
                   >
                     <span className={`dot ${stateClass(state)}`} title={state} />
-                    <span className="vm-name">{vm.name}</span>
+                    <span className="vm-name">
+                      {vm.lambda ? `λ ${vm.name}` : vm.name}
+                    </span>
                     <span className="mono dim">{vm.image}</span>
-                    <span className={`badge ${stateClass(state)}`}>{state}</span>
+                    {vm.lambda ? (
+                      <span
+                        className={`badge ${vm.lambda.status === 'ready' ? stateClass(state) : vm.lambda.status === 'error' ? 'st-destroyed' : 'st-transitional'}`}
+                        title={vm.lambda.error ?? vm.lambda.step ?? undefined}
+                      >
+                        {vm.lambda.status === 'ready'
+                          ? state
+                          : vm.lambda.status === 'error'
+                            ? 'deploy error'
+                            : `deploying·${vm.lambda.step || '…'}`}
+                      </span>
+                    ) : (
+                      <span className={`badge ${stateClass(state)}`}>{state}</span>
+                    )}
                   </li>
                 );
               })}
@@ -140,6 +155,11 @@ export default function LeftPanel({
                     {EXTRA_IMAGES.map((img) => (
                       <option key={img} value={img}>
                         {img}
+                      </option>
+                    ))}
+                    {LAMBDA_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
                       </option>
                     ))}
                   </select>

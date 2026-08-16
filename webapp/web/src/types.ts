@@ -1,13 +1,36 @@
 // Types mirroring the webapp server's DTOs (server/src/routes.ts).
 
 export type ProjectStatus = 'provisioning' | 'ready' | 'error' | 'deleting';
-export type VmKind = 'tiko' | 'extra';
+export type VmKind = 'tiko' | 'extra' | 'lambda';
+export type LambdaLanguage = 'node' | 'python';
+export type LambdaStatus = 'deploying' | 'ready' | 'error';
+
+export interface LambdaSummary {
+  slug: string;
+  language: LambdaLanguage;
+  status: LambdaStatus;
+  step: string;
+  error: string | null;
+}
+
+/** GET /vms/:vmId/lambda — summary plus the deployed source. */
+export interface LambdaDetail extends LambdaSummary {
+  source: string;
+  invokePath: string;
+}
+
+export interface LambdaInvokeResult {
+  status: number;
+  body: string;
+  durationMs: number;
+}
 
 export interface ProjectVm {
   vmId: string;
   name: string;
   image: string;
   kind: VmKind;
+  lambda?: LambdaSummary;
 }
 
 export interface Project {
@@ -35,6 +58,7 @@ export interface OverviewVm {
   cpus: number;
   memoryMb: number;
   createdAt: string;
+  lambda?: LambdaSummary;
 }
 
 export interface Overview {
@@ -49,4 +73,13 @@ export interface ExecResult {
   output: string;
 }
 
-export const EXTRA_IMAGES = ['ubuntu-24', 'python-3.12', 'node-22'] as const;
+/** Plain extra-VM images. node-22/python-3.12 are intentionally not here —
+ * they are only offered as lambdas (LAMBDA_OPTIONS below). */
+export const EXTRA_IMAGES = ['ubuntu-24'] as const;
+
+/** Pseudo-images for the add-VM select: `lambda:<language>` values are
+ * routed to the lambda-create endpoint instead of plain VM creation. */
+export const LAMBDA_OPTIONS = [
+  { value: 'lambda:node', label: 'node-22 (λ lambda)' },
+  { value: 'lambda:python', label: 'python-3.12 (λ lambda)' },
+] as const;

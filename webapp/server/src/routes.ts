@@ -17,6 +17,14 @@ import {
   rawListVms,
 } from './hostd.js';
 import {
+  DEFAULT_HANDLER,
+  LAMBDA_IMAGES,
+  LambdaNotReady,
+  deploySource,
+  invokeLambda,
+  provisionLambda,
+} from './lambda.js';
+import {
   EXTRA_IMAGES,
   TIKO_IMAGE,
   TIKO_PG_PORT,
@@ -27,15 +35,33 @@ import {
   psqlConnectionString,
   provisionProject,
 } from './provision.js';
-import type { BranchOrigin, Project, ProjectStatus, Registry } from './state.js';
+import type {
+  BranchOrigin,
+  LambdaLanguage,
+  LambdaMeta,
+  Project,
+  ProjectStatus,
+  Registry,
+} from './state.js';
+import { toSlug } from './state.js';
 
 // ── DTOs (mirrored by web/src/types.ts) ─────────────────────────────────────
+
+/** Lambda summary embedded in VM DTOs (the source stays out of the 1s poll). */
+export interface LambdaSummaryDto {
+  slug: string;
+  language: LambdaLanguage;
+  status: LambdaMeta['status'];
+  step: string;
+  error: string | null;
+}
 
 export interface ProjectVmDto {
   vmId: string;
   name: string;
   image: string;
-  kind: 'tiko' | 'extra';
+  kind: 'tiko' | 'extra' | 'lambda';
+  lambda?: LambdaSummaryDto;
 }
 
 export interface ProjectDto {
@@ -56,12 +82,13 @@ export interface OverviewVmDto {
   name: string;
   projectId: number;
   image: string;
-  kind: 'tiko' | 'extra';
+  kind: 'tiko' | 'extra' | 'lambda';
   state: string;
   guestIp: string | null;
   cpus: number;
   memoryMb: number;
   createdAt: string;
+  lambda?: LambdaSummaryDto;
 }
 
 export interface OverviewDto {
@@ -95,7 +122,23 @@ function toProjectDto(p: Project): ProjectDto {
     createdAt: p.createdAt,
     expiresInSeconds: Math.max(0, Math.round((p.expiresAt - Date.now()) / 1000)),
     branchedFrom: p.branchedFrom ?? null,
-    vms: p.vms.map((v) => ({ ...v })),
+    vms: p.vms.map((v) => ({ ...v, lambda: lambdaSummary(v.lambda) })),
+  };
+}
+
+/** Shallow lambda summary for DTOs (drops the source). */
+function lambdaSummary(
+  meta: LambdaMeta | undefined,
+): LambdaSummaryDto | undefined {
+  if (!meta) {
+    return undefined;
+  }
+  return {
+    slug: meta.slug,
+    language: meta.language,
+    status: meta.status,
+    step: meta.step,
+    error: meta.error ?? null,
   };
 }
 
@@ -116,6 +159,10 @@ function handle(
       }
       if (err instanceof TikovmApiError) {
         fail(res, err.status, err.message);
+        return;
+      }
+      if (err instanceof LambdaNotReady) {
+        fail(res, 409, err.message);
         return;
       }
       fail(
@@ -147,18 +194,26 @@ export function apiRouter(deps: ApiDeps): Router {
       const dto: OverviewDto = {
         hostdReachable,
         projects: registry.list().map(toProjectDto),
-        vms: tagged.map((v) => ({
-          vmId: v.vm_id,
-          name: v.vm_config.name,
-          projectId: v.vm_config.project_id,
-          image: v.vm_config.image,
-          kind: v.vm_config.image === TIKO_IMAGE ? 'tiko' : 'extra',
-          state: v.state,
-          guestIp: v.net?.guest_ip ?? null,
-          cpus: v.vm_config.cpus,
-          memoryMb: v.vm_config.memory_mb,
-          createdAt: v.created_at,
-        })),
+        vms: tagged.map((v) => {
+          // Kind/lambda metadata come from the registry, not the image, so
+          // two VMs on the same image can be different kinds.
+          const entry = registry
+            .vmOwner(v.vm_id)
+            ?.vms.find((e) => e.vmId === v.vm_id);
+          return {
+            vmId: v.vm_id,
+            name: v.vm_config.name,
+            projectId: v.vm_config.project_id,
+            image: v.vm_config.image,
+            kind: entry?.kind ?? (v.vm_config.image === TIKO_IMAGE ? 'tiko' : 'extra'),
+            state: v.state,
+            guestIp: v.net?.guest_ip ?? null,
+            cpus: v.vm_config.cpus,
+            memoryMb: v.vm_config.memory_mb,
+            createdAt: v.created_at,
+            lambda: lambdaSummary(entry?.lambda),
+          };
+        }),
       };
       res.json(dto);
     }),
@@ -373,6 +428,141 @@ export function apiRouter(deps: ApiDeps): Router {
         output: logsText(r),
       };
       res.json(dto);
+    }),
+  );
+
+  router.post(
+    '/projects/:id/lambdas',
+    handle(async (req, res) => {
+      const project = registry.get(Number(req.params.id));
+      if (!project) {
+        return fail(res, 404, `project ${req.params.id} not found`);
+      }
+      // Provisioning needs the project's tiko postgres guest IP, so the
+      // project must be fully up (the UI only offers this when ready).
+      if (project.status !== 'ready') {
+        return fail(res, 409, `project ${project.id} is not ready (status: ${project.status})`);
+      }
+      const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+      if (!name) {
+        return fail(res, 400, 'name must be a non-empty string');
+      }
+      const rawLanguage: unknown = req.body?.language;
+      if (rawLanguage !== 'node' && rawLanguage !== 'python') {
+        return fail(res, 400, "language must be 'node' or 'python'");
+      }
+      const language: LambdaLanguage = rawLanguage;
+      const slug = toSlug(name);
+      if (!slug) {
+        return fail(res, 400, `cannot derive a URL slug from "${name}"`);
+      }
+      if (registry.slugTaken(slug)) {
+        return fail(res, 409, `a lambda named "${slug}" already exists`);
+      }
+      // Placeholder vmId: filled in by provisionLambda as soon as hostd
+      // answers the create call; the entry makes the deploy visible at once.
+      const entry = {
+        vmId: '',
+        name: name.slice(0, 64),
+        image: LAMBDA_IMAGES[language],
+        kind: 'lambda' as const,
+        lambda: {
+          slug,
+          language,
+          status: 'deploying' as const,
+          step: 'queued',
+          error: undefined,
+          source: DEFAULT_HANDLER[language],
+        },
+      };
+      project.vms.push(entry);
+      console.log(`[webapp] deploying lambda ${slug} (${language}) in project ${project.id}`);
+      void provisionLambda(cfg, client, project, entry);
+      res.status(202).json(toProjectDto(project));
+    }),
+  );
+
+  router.get(
+    '/vms/:vmId/lambda',
+    handle(async (req, res) => {
+      const entry = registry.vmOwner(req.params.vmId)?.vms.find(
+        (v) => v.vmId === req.params.vmId,
+      );
+      if (!entry?.lambda) {
+        return fail(res, 404, `VM ${req.params.vmId} is not a lambda`);
+      }
+      res.json({
+        ...lambdaSummary(entry.lambda),
+        source: entry.lambda.source,
+        invokePath: `/api/demo/f/${entry.lambda.slug}`,
+      });
+    }),
+  );
+
+  router.put(
+    '/vms/:vmId/lambda',
+    handle(async (req, res) => {
+      const entry = registry.vmOwner(req.params.vmId)?.vms.find(
+        (v) => v.vmId === req.params.vmId,
+      );
+      if (!entry?.lambda) {
+        return fail(res, 404, `VM ${req.params.vmId} is not a lambda`);
+      }
+      if (entry.lambda.status !== 'ready') {
+        return fail(res, 409, `lambda is not ready (status: ${entry.lambda.status})`);
+      }
+      const source = typeof req.body?.source === 'string' ? req.body.source : '';
+      if (!source.trim()) {
+        return fail(res, 400, 'source must be a non-empty string');
+      }
+      try {
+        await deploySource(client, entry, source);
+      } catch (err) {
+        // Almost always a failed in-guest syntax check — surface the
+        // compiler output as a 400; the last-good handler stays live.
+        return fail(res, 400, err instanceof Error ? err.message : String(err));
+      }
+      console.log(`[webapp] lambda ${entry.lambda.slug} redeployed (VM ${entry.vmId})`);
+      res.json({ ok: true });
+    }),
+  );
+
+  // The public invoke URL. Unauthenticated by design (like an AWS function
+  // URL with auth-type NONE): the webapp holds the hostd token and mints a
+  // short-lived proxy JWT per call.
+  router.all(
+    '/f/:slug',
+    handle(async (req, res) => {
+      const found = registry.lambdaBySlug(req.params.slug);
+      if (!found || !found.vm.lambda) {
+        return fail(res, 404, `no lambda named "${req.params.slug}"`);
+      }
+      // Body handling: only JSON content-types were consumed by the
+      // app-level express.json (it still sets req.body = {} when the
+      // content-type doesn't match, so key on the header, not req.body);
+      // anything else is still on the wire — collect it raw.
+      const ct = String(req.headers['content-type'] ?? '');
+      let body: string;
+      if (ct.includes('application/json') && req.body !== undefined) {
+        body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+      } else {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) {
+          chunks.push(chunk as Buffer);
+        }
+        body = Buffer.concat(chunks).toString('utf8');
+      }
+      const q = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+      const result = await invokeLambda(cfg, client, found.project, found.vm, {
+        method: req.method,
+        queryString: q,
+        body,
+      });
+      res
+        .status(result.status)
+        .set('content-type', result.contentType)
+        .set('x-lambda-duration-ms', String(result.durationMs))
+        .send(result.body);
     }),
   );
 

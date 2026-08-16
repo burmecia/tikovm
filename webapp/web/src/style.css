@@ -39,9 +39,15 @@ body {
   grid-template-rows: auto auto 1fr;
 }
 
+/* Explicit row placement (see .app-header/.banner/.main): the rows are
+ * header / banner / main. Without the pins, auto-placement puts <main> in
+ * the banner's row (auto = content-sized), leaving .main unbounded so the
+ * panels' internal scrolling (overflow-y:auto) never engages. */
+
 /* ── header ─────────────────────────────────────────────────────────── */
 
 .app-header {
+  grid-row: 1;
   display: flex;
   align-items: center;
   gap: 16px;
@@ -76,11 +82,9 @@ body {
 }
 
 .banner {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 10;
+  /* In normal flow (the .app grid's middle row), not position:fixed — a
+   * fixed banner overlays the bottom of the panels and hides content. */
+  grid-row: 2;
   padding: 6px 14px;
   border-top: 1px solid var(--border);
   cursor: pointer;
@@ -100,9 +104,10 @@ body {
 /* ── layout ─────────────────────────────────────────────────────────── */
 
 .main {
+  grid-row: 3;
   min-height: 0;
   display: grid;
-  grid-template-columns: 300px 1fr;
+  grid-template-columns: 440px 1fr;
   grid-template-rows: minmax(160px, 230px) 1fr;
   grid-template-areas:
     'top top'
@@ -437,6 +442,17 @@ body {
   resize: vertical;
 }
 
+/* Lambda source editor: bounded height so the invoke form and output below
+ * stay reachable; the panel itself scrolls (overflow-y:auto). */
+.lambda-src {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 0 10px 8px;
+  resize: vertical;
+  min-height: 140px;
+  max-height: 40vh;
+}
+
 .hint {
   padding: 4px 10px 8px;
   font-size: 11px;
@@ -450,8 +466,9 @@ body {
   border-radius: 4px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  max-height: 260px;
+  max-height: 220px;
   overflow-y: auto;
+  flex-shrink: 0;
   color: #a8d5b9;
 }
 
@@ -471,6 +488,12 @@ button {
 button:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+button.copied {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: #10241a;
 }
 
 button:disabled {

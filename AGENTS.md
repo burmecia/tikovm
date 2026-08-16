@@ -350,13 +350,16 @@ blindly:
 - `rootfs/build_rootfs_ubuntu24.sh` — builds `ubuntu-24.04-rootfs.ext4`
   (base image).
 - `rootfs/build_rootfs_python312.sh` — same base plus `python3` (3.12 on
-  noble), producing `python-3.12-rootfs.ext4`; uses the https apt mirror
-  (this host's egress blocks plain http/80). New images must also be
+  noble) and `python3-psycopg2` (the Postgres driver webapp lambda
+  functions use), producing `python-3.12-rootfs.ext4`; uses the https apt
+  mirror (this host's egress blocks plain http/80). New images must also be
   registered in `VmConfig::rootfs_file()` (`hostd/src/vmm/vm.rs`) to be
   selectable via the create-VM `image` field.
 - `rootfs/build_rootfs_node22.sh` — same base plus Node.js 22 (LTS) from
   the official nodejs.org tarball unpacked into `/usr/local` via the
-  `extra_setup` hook (noble's `nodejs` package is only Node 18), producing
+  `extra_setup` hook (noble's `nodejs` package is only Node 18), plus the
+  `pg` npm package installed into `/opt/lambda` via a chrooted npm install
+  (the driver webapp lambda functions use), producing
   `node-22-rootfs.ext4`.
 - `rootfs/build_rootfs_postgres16.sh` — same base plus PostgreSQL 16
   (noble's stock `postgresql` package), producing

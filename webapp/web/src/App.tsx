@@ -117,6 +117,12 @@ export default function App() {
               runQuery(() => api.exec(selectedVm.vmId, cmd), 'exec')
             }
             onSql={(sql) => runQuery(() => api.sql(selectedVm.vmId, sql), 'query')}
+            onBranch={(name) =>
+              void run(
+                () => api.branch(selectedVm.vmId, name),
+                'branch creation started — follow the new project in the list',
+              )
+            }
             onCopyConnStr={() => {
               void (async () => {
                 try {

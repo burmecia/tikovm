@@ -8,7 +8,11 @@ import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
 import {
+  SEED_DB_ID,
+  SEED_PACK_PATH,
   TIKO_ENV_PATH,
+  branchBackupArgv,
+  branchPackPath,
   branchRestoreArgv,
   buildTikoEnv,
   shellQuote,
@@ -70,25 +74,75 @@ describe('tikoEnvWriteCmd', () => {
   });
 });
 
+describe('branchPackPath', () => {
+  it('names the pack by the branch db id, next to the seed pack', () => {
+    assert.equal(branchPackPath(1003), '/mnt/s3files/tiko_backup/branch-1003.tar.zst');
+  });
+});
+
+describe('branchBackupArgv', () => {
+  it('backs up the local postgres into the given pack', () => {
+    assert.deepEqual(branchBackupArgv('/mnt/s3files/tiko_backup/branch-1003.tar.zst'), [
+      'tiko_branch',
+      'backup',
+      '--pack',
+      '/mnt/s3files/tiko_backup/branch-1003.tar.zst',
+      '--host',
+      '127.0.0.1',
+      '--port',
+      '5432',
+      '--user',
+      'postgres',
+    ]);
+  });
+});
+
 describe('branchRestoreArgv', () => {
   it('branches the given db/project from the seed pack (db_id=0)', () => {
-    assert.deepEqual(branchRestoreArgv({ dbId: 1001, projectId: 1000 }), [
+    assert.deepEqual(
+      branchRestoreArgv({
+        packPath: SEED_PACK_PATH,
+        parentDbId: SEED_DB_ID,
+        dbId: 1001,
+        projectId: 1000,
+      }),
+      [
+        'tiko_branch',
+        'restore',
+        '--pack',
+        '/mnt/s3files/tiko_backup/0.tar.zst',
+        '--parent-db-id',
+        '0',
+        '--db-id',
+        '1001',
+        '--project-id',
+        '1000',
+        '--pgdata',
+        '/var/lib/postgresql/tt',
+        '--branch-port',
+        '5432',
+        '--recovery-timeout',
+        '240',
+      ],
+    );
+  });
+
+  it('branches from another project’s pack and db id', () => {
+    const argv = branchRestoreArgv({
+      packPath: branchPackPath(1003),
+      parentDbId: 1001,
+      dbId: 1003,
+      projectId: 1002,
+    });
+    assert.deepEqual(argv.slice(0, 8), [
       'tiko_branch',
       'restore',
       '--pack',
-      '/mnt/s3files/tiko_backup/0.tar.zst',
+      '/mnt/s3files/tiko_backup/branch-1003.tar.zst',
       '--parent-db-id',
-      '0',
-      '--db-id',
       '1001',
-      '--project-id',
-      '1000',
-      '--pgdata',
-      '/var/lib/postgresql/tt',
-      '--branch-port',
-      '5432',
-      '--recovery-timeout',
-      '240',
+      '--db-id',
+      '1003',
     ]);
   });
 });

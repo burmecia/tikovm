@@ -61,4 +61,39 @@ describe('Registry', () => {
     assert.deepEqual(a.vms.map((v) => v.vmId), ['vm-a2']);
     assert.equal(registry.vmOwner('vm-a1'), undefined);
   });
+
+  it('records branch lineage and walks descendants children-first', () => {
+    const registry = new Registry();
+    const root = registry.newProject('root', 60_000);
+    const child = registry.newProject('child', 60_000, undefined, {
+      projectId: root.id,
+      dbId: root.dbId,
+    });
+    const grandchild = registry.newProject('grandchild', 60_000, undefined, {
+      projectId: child.id,
+      dbId: child.dbId,
+    });
+    registry.newProject('sibling', 60_000, undefined, {
+      projectId: root.id,
+      dbId: root.dbId,
+    });
+    const unrelated = registry.newProject('unrelated', 60_000);
+
+    assert.equal(root.branchedFrom, undefined);
+    assert.deepEqual(child.branchedFrom, { projectId: root.id, dbId: root.dbId });
+    // Post-order: the grandchild precedes its parent; unrelated projects and
+    // the project itself are excluded.
+    assert.deepEqual(registry.descendants(root.id).map((p) => p.name), [
+      'grandchild',
+      'child',
+      'sibling',
+    ]);
+    assert.deepEqual(registry.descendants(child.id).map((p) => p.name), ['grandchild']);
+    assert.deepEqual(registry.descendants(grandchild.id), []);
+    assert.deepEqual(registry.descendants(unrelated.id), []);
+
+    // A removed project drops out of its ancestor's descendants.
+    registry.remove(child.id);
+    assert.deepEqual(registry.descendants(root.id).map((p) => p.name), ['sibling']);
+  });
 });

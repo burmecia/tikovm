@@ -22,11 +22,12 @@ import {
   TIKO_PG_PORT,
   createExtraVm,
   deleteProject,
+  provisionBranch,
   psqlArgv,
   psqlConnectionString,
   provisionProject,
 } from './provision.js';
-import type { Project, ProjectStatus, Registry } from './state.js';
+import type { BranchOrigin, Project, ProjectStatus, Registry } from './state.js';
 
 // ── DTOs (mirrored by web/src/types.ts) ─────────────────────────────────────
 
@@ -46,6 +47,7 @@ export interface ProjectDto {
   error: string | null;
   createdAt: string;
   expiresInSeconds: number;
+  branchedFrom: BranchOrigin | null;
   vms: ProjectVmDto[];
 }
 
@@ -92,6 +94,7 @@ function toProjectDto(p: Project): ProjectDto {
     error: p.error ?? null,
     createdAt: p.createdAt,
     expiresInSeconds: Math.max(0, Math.round((p.expiresAt - Date.now()) / 1000)),
+    branchedFrom: p.branchedFrom ?? null,
     vms: p.vms.map((v) => ({ ...v })),
   };
 }
@@ -192,8 +195,12 @@ export function apiRouter(deps: ApiDeps): Router {
       if (!project) {
         return fail(res, 404, `project ${req.params.id} not found`);
       }
-      await deleteProject(cfg, client, registry.remove.bind(registry), project);
-      console.log(`[webapp] project ${project.id} deleted`);
+      const cascaded = registry.descendants(project.id).length;
+      await deleteProject(cfg, client, registry, project);
+      console.log(
+        `[webapp] project ${project.id} deleted` +
+          (cascaded ? ` (cascade: ${cascaded} branch${cascaded === 1 ? '' : 'es'})` : ''),
+      );
       res.status(204).end();
     }),
   );
@@ -232,6 +239,48 @@ export function apiRouter(deps: ApiDeps): Router {
       });
       console.log(`[webapp] VM ${vmId} (${image}) added to project ${project.id}`);
       res.status(201).json(toProjectDto(project));
+    }),
+  );
+
+  router.post(
+    '/vms/:vmId/branch',
+    handle(async (req, res) => {
+      const vmId = req.params.vmId;
+      const parent = registry.vmOwner(vmId);
+      if (!parent) {
+        return fail(res, 404, `VM ${vmId} is not managed by this webapp`);
+      }
+      const entry = parent.vms.find((v) => v.vmId === vmId);
+      if (entry?.kind !== 'tiko') {
+        return fail(res, 400, 'only tiko postgres VMs can be branched');
+      }
+      // Branching reads the source database (backup) and needs it fully
+      // provisioned; an error-state source would fail opaquely mid-pipeline.
+      if (parent.status !== 'ready') {
+        return fail(res, 409, `project ${parent.id} is not ready (status: ${parent.status})`);
+      }
+      const name =
+        typeof req.body?.name === 'string' && req.body.name.trim()
+          ? req.body.name.trim().slice(0, 64)
+          : `${parent.name}-branch`;
+      const project = registry.newProject(name, cfg.projectTtlMs, undefined, {
+        projectId: parent.id,
+        dbId: parent.dbId,
+      });
+      console.log(
+        `[webapp] branching project ${parent.id} (db ${parent.dbId}) into ` +
+          `project ${project.id} (db ${project.dbId}) "${project.name}"`,
+      );
+      // Provisioning (backup -> new VM -> restore -> verify) is fully async —
+      // the UI follows project.status/step, same as project creation.
+      void provisionBranch(cfg, client, project, parent).then(() => {
+        if (project.status === 'ready') {
+          console.log(`[webapp] branch project ${project.id} ready`);
+        } else {
+          console.error(`[webapp] branch project ${project.id} failed: ${project.error}`);
+        }
+      });
+      res.status(202).json(toProjectDto(project));
     }),
   );
 

@@ -5,11 +5,11 @@ tiko postgres guest image end to end. Three panels:
 
 - **top** — vmtop-style live inventory of all demo VMs (1s poll)
 - **left** — projects (create/delete), each with its nested VM list
-- **right** — operations on the selected VM: exec-in-guest, a SQL console
-  and a copyable psql connection string (mints a 1h proxy token) for the
-  project's tiko postgres VM, and delete for extra VMs (the tiko VM goes
-  away with its project; it auto-suspends when idle and wakes on the next
-  request)
+- **right** — operations on the selected VM: exec-in-guest, a SQL console,
+  a copyable psql connection string (mints a 1h proxy token) and **database
+  branching** for the project's tiko postgres VM, and delete for extra VMs
+  (the tiko VM goes away with its project; it auto-suspends when idle and
+  wakes on the next request)
 
 ## What a "project" is
 
@@ -25,6 +25,30 @@ after 120s without client connections hostd snapshots it (the Firecracker
 process stops, consuming no CPU/memory) and the next SQL/exec request
 transparently restores it. Extra VMs (`ubuntu-24` / `python-3.12` /
 `node-22`) can be added alongside.
+
+### Database branching
+
+The "create branch" action on a tiko postgres VM creates a **new project**
+whose database is a copy-on-write branch of the selected one:
+
+1. the source VM is woken if suspended (any exec does this transparently) and
+   its postgres is sanity-checked with `select 1`
+2. `tiko_branch backup` packs the running database (pg_basebackup → tar.zst)
+   to `/mnt/s3files/tiko_backup/branch-<dbId>.tar.zst` — the shared S3 Files
+   mount is the only path both VMs can see, since source and branch live in
+   different projects/subnets
+3. a new project + tiko postgres VM is provisioned exactly like a plain one,
+   except `tiko_branch restore` reads that pack with
+   `--parent-db-id <source dbId>` instead of the seed
+4. postgres is started, verified with `select 1`, and the pack file is
+   deleted (best-effort also on failure)
+
+Branches are copy-on-write over the shared tiko storage root and keep reading
+their ancestors' chunks (transitively — branching a branch works), so
+**deleting a project cascades to all its descendant branches**, whether the
+deletion is manual, by TTL expiry, or at shutdown. The project list shows the
+lineage (`⤷ branch of project #…`). The branch appears as a `provisioning`
+project and follows the same status/step polling as project creation.
 
 Projects expire after a TTL (default **1 hour**) and are deleted with all
 their VMs. On shutdown (Ctrl-C) the webapp deletes every project, extra VM

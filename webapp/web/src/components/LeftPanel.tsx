@@ -90,6 +90,11 @@ export default function LeftPanel({
                 delete
               </button>
             </div>
+            {p.branchedFrom && (
+              <div className="hint dim">
+                ⤷ branch of project #{p.branchedFrom.projectId} (db {p.branchedFrom.dbId})
+              </div>
+            )}
             {p.status === 'provisioning' && p.step && (
               <div className="project-step mono">{p.step}…</div>
             )}

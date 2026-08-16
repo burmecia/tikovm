@@ -19,6 +19,8 @@ export interface Project {
   error: string | null;
   createdAt: string;
   expiresInSeconds: number;
+  /** Set when this project's database branched from another project's. */
+  branchedFrom: { projectId: number; dbId: number } | null;
   vms: ProjectVm[];
 }
 

@@ -8,9 +8,13 @@
 //! storage manager namespaces objects as `{TIKO_STORAGE_ROOT}/s3sim/{org}/{db}`,
 //! so a globally unique `dbId` per project keeps S3 Files data disjoint.
 //!
-//! Also here: the seed-pack constants and the `tiko_branch restore` argv
-//! builder used to initialize a project's database by branching it from the
-//! seed db (db_id=0) — pure logic, unit-tested alongside the env builder.
+//! Also here: the seed-pack constants and the `tiko_branch` argv builders
+//! used to initialize a project's database by branching it from the seed db
+//! (db_id=0) or — for user-requested database branches — from a pack produced
+//! by `tiko_branch backup` on another project. Branch packs live next to the
+//! seed pack on the shared S3 Files mount (the only path both the source and
+//! the branch VM can see — they are in different projects/subnets) and are
+//! deleted once the branch passes its sanity check.
 
 /** The identity fields of one demo project's tiko postgres VM. */
 export interface TikoIdentity {
@@ -30,6 +34,17 @@ export const TIKO_ENV_PATH = '/var/lib/postgresql/tiko.env';
 export const SEED_PACK_PATH = '/mnt/s3files/tiko_backup/0.tar.zst';
 /** The seed database id every project branches from. */
 export const SEED_DB_ID = 0;
+
+/**
+ * Pack path for a user-requested database branch: `tiko_branch backup` on the
+ * source project writes it, the branch project's restore reads it, and it is
+ * deleted once the branch is verified. On the shared S3 Files mount so both
+ * VMs (different projects, different subnets) can reach it; named by the
+ * branch's globally unique db id, so concurrent branches never collide.
+ */
+export function branchPackPath(dbId: number): string {
+  return `/mnt/s3files/tiko_backup/branch-${dbId}.tar.zst`;
+}
 /**
  * In-guest PGDATA — must match `DB="tt"` in the image's
  * `tiko_env.sh`/`start_pg.sh`, so the canonical start script and the
@@ -81,10 +96,37 @@ export function tikoEnvWriteCmd(content: string): string[] {
 }
 
 /**
+ * `tiko_branch backup` argv that packs a running project's database into a
+ * tar.zst at `packPath` (pg_basebackup against the local postgres, then
+ * pack). Run as the postgres user; the connection flags match how
+ * `psqlArgv` reaches the database. The backup is online and consistent, so
+ * the source database keeps serving while it runs (and the in-flight exec
+ * keeps the source VM's auto-suspend gate from firing mid-backup).
+ */
+export function branchBackupArgv(packPath: string): string[] {
+  return [
+    'tiko_branch',
+    'backup',
+    '--pack',
+    packPath,
+    '--host',
+    '127.0.0.1',
+    '--port',
+    '5432',
+    '--user',
+    'postgres',
+  ];
+}
+
+/**
  * `tiko_branch restore` argv that initializes a fresh project database by
- * branching it from the seed pack (copy-on-write over the shared
+ * branching it from a pack (copy-on-write over the shared
  * `TIKO_STORAGE_ROOT`; the branch namespace `{org}/{dbId}` is seeded from the
- * seed db's base manifest at the backup checkpoint LSN). Run as the postgres
+ * parent db's base manifest at the backup checkpoint LSN). The pack/parent
+ * are the seed constants for a plain project, or a branch pack + the source
+ * project's db id for a user-requested branch (nested branching works —
+ * ChunkRefs keep their original db id, so a grandchild reads chunks
+ * transitively from every ancestor's namespace). Run as the postgres
  * user (restore creates PGDATA 0700 and drives `pg_ctl`, which refuses root);
  * the in-guest `tiko_branch` wrapper sources `tiko.env` for org/storage env,
  * so the per-project `tiko.env` must be written first and the ids passed here
@@ -92,7 +134,9 @@ export function tikoEnvWriteCmd(content: string): string[] {
  * `start_pg.sh`. `--recovery-timeout 240` keeps the restore inside hostd's
  * 5-minute exec timeout.
  */
-export function branchRestoreArgv(identity: {
+export function branchRestoreArgv(restore: {
+  packPath: string;
+  parentDbId: number;
   dbId: number;
   projectId: number;
 }): string[] {
@@ -100,13 +144,13 @@ export function branchRestoreArgv(identity: {
     'tiko_branch',
     'restore',
     '--pack',
-    SEED_PACK_PATH,
+    restore.packPath,
     '--parent-db-id',
-    String(SEED_DB_ID),
+    String(restore.parentDbId),
     '--db-id',
-    String(identity.dbId),
+    String(restore.dbId),
     '--project-id',
-    String(identity.projectId),
+    String(restore.projectId),
     '--pgdata',
     PGDATA,
     '--branch-port',

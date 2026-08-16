@@ -53,6 +53,12 @@ export const api = {
       { method: 'POST' },
     ),
 
+  branch: (vmId: string, name: string) =>
+    call<Project>(`/api/demo/vms/${vmId}/branch`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+
   exec: (vmId: string, cmd: string) =>
     call<ExecResult>(`/api/demo/vms/${vmId}/exec`, {
       method: 'POST',

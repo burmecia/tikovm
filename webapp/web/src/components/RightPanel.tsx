@@ -10,6 +10,7 @@ interface Props {
   onExec: (cmd: string) => Promise<ExecResult | null>;
   onSql: (sql: string) => Promise<ExecResult | null>;
   onCopyConnStr: () => void;
+  onBranch: (name: string) => void;
 }
 
 /** Right panel: operations on the selected VM. */
@@ -20,9 +21,11 @@ export default function RightPanel({
   onExec,
   onSql,
   onCopyConnStr,
+  onBranch,
 }: Props) {
   const [cmd, setCmd] = useState('uname -a');
   const [sql, setSql] = useState('select version();');
+  const [branchName, setBranchName] = useState('');
   const [output, setOutput] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const isTiko = vm.kind === 'tiko';
@@ -78,6 +81,33 @@ export default function RightPanel({
           <div className="hint dim">
             mints a 1-hour proxy token and copies a psql command that connects
             through hostd's TCP proxy
+          </div>
+
+          <div className="section-title">database branching</div>
+          <form
+            className="exec-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (project?.status === 'ready') {
+                onBranch(branchName.trim());
+                setBranchName('');
+              }
+            }}
+          >
+            <input
+              value={branchName}
+              onChange={(e) => setBranchName(e.target.value)}
+              placeholder={project ? `${project.name}-branch` : 'branch project name'}
+              disabled={project?.status !== 'ready'}
+            />
+            <button type="submit" disabled={project?.status !== 'ready'}>
+              create branch
+            </button>
+          </form>
+          <div className="hint dim">
+            backs up this database and boots a new project whose database is a
+            copy-on-write branch of it; deleting or expiring the source
+            cascades to its branches
           </div>
         </>
       )}

@@ -8,15 +8,27 @@
 //!   2. wait for `started` and the S3 Files mount (/mnt/s3files)
 //!   3. rewrite /var/lib/postgresql/tiko.env with the project's tiko identity
 //!      (persists in the overlay upper layer, survives snapshot/restore)
-//!   4. initialize the database with `tiko_branch restore`, branching from the
-//!      seed pack (/mnt/s3files/tiko_backup/0.tar.zst, db_id=0) — every
-//!      project db is a copy-on-write branch of the seed
+//!   4. initialize the database with `tiko_branch restore`, branching from a
+//!      pack — the seed pack (/mnt/s3files/tiko_backup/0.tar.zst, db_id=0)
+//!      for a plain project, or a fresh `tiko_branch backup` of another
+//!      project for a user-requested database branch; every project db is a
+//!      copy-on-write branch of its parent
 //!   5. start postgres via the image's start_pg.sh (restore leaves the branch
 //!      stopped) and verify it answers `select 1`
 //!
+//! Branching a project (`provisionBranch`) prepends step 0: sanity-check the
+//! source database (waking its VM if suspended), then `tiko_branch backup`
+//! into a pack on the shared S3 Files mount — the only path both VMs can
+//! see, since source and branch live in different projects/subnets. The pack
+//! is deleted once the branch is verified (or provisioning fails).
+//!
 //! Deleting a project best-effort wipes the project's S3 Files namespace
 //! while the guest (which owns the mount) is still alive, then deletes the
-//! VMs; hostd tears down the per-project bridge with the last VM.
+//! VMs; hostd tears down the per-project bridge with the last VM. Deletion
+//! **cascades**: a branch reads its ancestors' chunks copy-on-write through
+//! the shared storage root, so deleting a project first deletes all its
+//! descendant branches (children before parents) — a branch whose ancestor's
+//! namespace is wiped is corrupted.
 
 import type { Tikovm } from 'tikovm';
 import type { Config } from './config.js';
@@ -29,8 +41,12 @@ import {
   execUntil,
   waitForState,
 } from './hostd.js';
-import type { Project } from './state.js';
+import type { Project, Registry } from './state.js';
 import {
+  SEED_DB_ID,
+  SEED_PACK_PATH,
+  branchBackupArgv,
+  branchPackPath,
   branchRestoreArgv,
   buildTikoEnv,
   tikoEnvWriteCmd,
@@ -47,11 +63,102 @@ export const TIKO_PG_PORT = 5432;
 export const EXTRA_IMAGES = ['ubuntu-24', 'python-3.12', 'node-22'] as const;
 export type ExtraImage = (typeof EXTRA_IMAGES)[number];
 
-/** Provision a project's tiko postgres VM; updates `project` status/step. */
+/** Provision a plain project's tiko postgres VM (branched from the seed
+ * pack); updates `project` status/step. */
 export async function provisionProject(
   cfg: Config,
   client: Tikovm,
   project: Project,
+): Promise<void> {
+  await provisionTikoVm(cfg, client, project, {
+    packPath: SEED_PACK_PATH,
+    parentDbId: SEED_DB_ID,
+  });
+}
+
+/**
+ * Provision a project whose database branches from another project's.
+ * Backs up the source database (waking its VM if suspended — the exec API
+ * restores it transparently, and the in-flight backup exec blocks the
+ * source's auto-suspend gate), then runs the same pipeline as a plain
+ * project with the fresh pack and the source's db id as parent. The pack is
+ * best-effort deleted afterwards either way; on failure the project is left
+ * in `error` with its (half-provisioned) VMs for debugging, same as a plain
+ * project.
+ */
+export async function provisionBranch(
+  cfg: Config,
+  client: Tikovm,
+  project: Project,
+  parent: Project,
+): Promise<void> {
+  const packPath = branchPackPath(project.dbId);
+  const parentTikoVm = parent.vms.find((v) => v.kind === 'tiko');
+  try {
+    if (!parentTikoVm) {
+      throw new Error(`source project ${parent.id} has no tiko postgres VM`);
+    }
+    project.step = 'checking the source database';
+    await execOk(client, parentTikoVm.vmId, psqlArgv('select 1'), 'source database readiness');
+
+    project.step = 'backing up the source database';
+    await execOk(
+      client,
+      parentTikoVm.vmId,
+      asPostgresArgv(branchBackupArgv(packPath)),
+      'tiko_branch backup',
+    );
+
+    await provisionTikoVm(cfg, client, project, {
+      packPath,
+      parentDbId: parent.dbId,
+    });
+  } catch (err) {
+    project.status = 'error';
+    project.step = '';
+    project.error = err instanceof Error ? err.message : String(err);
+  }
+  // The pack is a full base backup — large and useless once the branch
+  // stands (or never will). Best-effort: prefer the branch VM (just booted,
+  // surely running), fall back to the source.
+  await removeBranchPack(
+    client,
+    [project.vms.find((v) => v.kind === 'tiko')?.vmId, parentTikoVm?.vmId],
+    packPath,
+  );
+}
+
+/** Best-effort `rm -f` of a branch pack via the first reachable guest. */
+async function removeBranchPack(
+  client: Tikovm,
+  vmIds: (string | undefined)[],
+  packPath: string,
+): Promise<void> {
+  for (const vmId of vmIds) {
+    if (!vmId) {
+      continue;
+    }
+    try {
+      await execInVm(client, vmId, ['rm', '-f', packPath]);
+      return;
+    } catch (err) {
+      console.warn(
+        `[webapp] branch pack ${packPath} cleanup via ${vmId} failed: ` +
+          `${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+}
+
+/**
+ * Shared provisioning pipeline: create the project's tiko postgres VM and
+ * branch its database from the given pack; updates `project` status/step.
+ */
+async function provisionTikoVm(
+  cfg: Config,
+  client: Tikovm,
+  project: Project,
+  restore: { packPath: string; parentDbId: number },
 ): Promise<void> {
   const setStep = (step: string) => {
     project.step = step;
@@ -101,16 +208,21 @@ export async function provisionProject(
     });
     await execOk(client, vm.id, tikoEnvWriteCmd(env), 'tiko.env write');
 
-    // Branch the project's database from the seed pack (db_id=0). Runs as the
-    // postgres user (restore creates PGDATA 0700 and drives pg_ctl, which
-    // refuses root); the in-guest tiko_branch wrapper sources the tiko.env
-    // just written, so the ids here must match it.
-    setStep('restoring the database from the seed pack');
+    // Branch the project's database from the pack. Runs as the postgres user
+    // (restore creates PGDATA 0700 and drives pg_ctl, which refuses root);
+    // the in-guest tiko_branch wrapper sources the tiko.env just written, so
+    // the ids here must match it.
+    setStep('restoring the database from the pack');
     await execOk(
       client,
       vm.id,
       asPostgresArgv(
-        branchRestoreArgv({ dbId: project.dbId, projectId: project.id }),
+        branchRestoreArgv({
+          packPath: restore.packPath,
+          parentDbId: restore.parentDbId,
+          dbId: project.dbId,
+          projectId: project.id,
+        }),
       ),
       'tiko_branch restore',
     );
@@ -179,13 +291,27 @@ async function cleanupTikoNamespace(
   ]);
 }
 
-/** Delete a project and every VM under it; always removes it from the registry. */
+/**
+ * Delete a project and every VM under it; always removes it from the
+ * registry. Cascades: branches read this project's chunks copy-on-write, so
+ * all descendant branches are deleted first (children before parents).
+ * No-ops if the project is already gone or mid-delete — the TTL sweeper and
+ * the shutdown handler iterate snapshots of the registry and would otherwise
+ * double-delete projects already cascaded by an ancestor.
+ */
 export async function deleteProject(
   cfg: Config,
   client: Tikovm,
-  remove: (id: number) => void,
+  registry: Registry,
   project: Project,
 ): Promise<void> {
+  const live = registry.get(project.id);
+  if (!live || live.status === 'deleting') {
+    return;
+  }
+  for (const child of registry.descendants(project.id)) {
+    await deleteProject(cfg, client, registry, child);
+  }
   project.status = 'deleting';
   project.step = 'deleting VMs';
   try {
@@ -195,7 +321,7 @@ export async function deleteProject(
     }
     await Promise.allSettled(project.vms.map((v) => deleteVmIfExists(client, v.vmId)));
   } finally {
-    remove(project.id);
+    registry.remove(project.id);
   }
 }
 

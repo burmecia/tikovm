@@ -7,6 +7,11 @@
 //! - Shutdown handler: SIGINT/SIGTERM deletes every registry project (and
 //!   tagged strays) before exiting; hostd tears down per-project bridges
 //!   automatically with each project's last VM.
+//!
+//! All three go through `deleteProject`, which cascades into branch
+//! descendants and no-ops on already-removed projects — so iterating a
+//! registry snapshot here is safe even when a parent's cascade deletes a
+//! branch the snapshot also contains.
 
 import type { Server } from 'node:http';
 import type { Tikovm } from 'tikovm';
@@ -29,7 +34,7 @@ export function startTtlSweeper(
       for (const project of registry.expired(Date.now())) {
         console.log(`[webapp] project ${project.id} expired — deleting`);
         try {
-          await deleteProject(cfg, client, registry.remove.bind(registry), project);
+          await deleteProject(cfg, client, registry, project);
         } catch (err) {
           console.error(`[webapp] TTL delete of project ${project.id} failed:`, err);
         }
@@ -92,7 +97,7 @@ export function installShutdownHandler(
           registry
             .list()
             .map((p: Project) =>
-              deleteProject(cfg, client, registry.remove.bind(registry), p),
+              deleteProject(cfg, client, registry, p),
             ),
         );
         await sweepOrphans(cfg, client, registry);

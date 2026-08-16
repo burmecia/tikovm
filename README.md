@@ -24,8 +24,7 @@ Tiko database VM that freezes when idle and wakes on the first connection.
 ## Why tikovm?
 
 - 🧱 **VMs that feel like containers.** Create, exec, snapshot, and destroy
-  microVMs over a plain REST API. Boot to a working shell takes under ten
-  seconds: every VM shares a read-only Ubuntu base image and gets a per-VM
+  microVMs over a plain REST API. Every VM shares a read-only Ubuntu base image and gets a per-VM
   overlay disk, so there is nothing to copy or install at create time.
 - 📴 **Scales to zero.** An idle VM is snapshotted and its Firecracker process
   exits — zero CPU, zero memory, just a snapshot file. The next request (or
@@ -208,7 +207,7 @@ cd webapp && npm run setup && TIKOVM_HOSTD_API_TOKEN=$TIKOVM_HOSTD_API_TOKEN npm
 # open http://<host>:4000
 ```
 
-Create a project — ten seconds later it has a running Postgres branched
+Create a project — it has a running Postgres branched
 copy-on-write from a seed pack. Add a lambda by pasting a script, or a
 PostgREST VM for an instant REST API over every table. Leave it idle and
 everything suspends itself.

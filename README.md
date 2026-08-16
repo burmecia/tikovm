@@ -1,110 +1,243 @@
 # tikovm
 
-## hostd
+**Firecracker microVMs with a REST API — the compute layer behind [Tiko](https://github.com/burmecia/tiko).**
 
-`hostd` manages Firecracker microVMs and their host networking. It must run
-as root (it creates bridges/TAP devices and iptables NAT rules, and
-loop-mounts overlay disks). Use `scripts/run_hostd.sh`, which builds as
-the current user and runs the binary via `sudo -E`.
+tikovm turns a single KVM host into a microVM platform. One daemon (`hostd`)
+creates VMs, runs commands inside them, snapshots them, and puts their ports on
+the network — and it takes care of the boring parts (bridges, NAT, disks, idle
+suspension) so a VM feels about as easy to start as a container, while still
+being a real VM with its own kernel.
 
-Networking: each project gets its own bridge (`tbr-<project_id>`) with a
-subnet carved from `--net-supernet` (default `172.16.0.0/12`,
-`--net-subnet-prefix` default `24`). VMs in the same project share the subnet
-and reach each other at L2; the host side of the bridge is the gateway (`.1`)
-and internet egress is NATed per subnet. A project's bridge/subnet is created
-when its first VM is created and torn down when its last VM is destroyed;
-allocation state is persisted under the work dir and reconciled on startup.
-The guest IP is delivered as a kernel `ip=` boot argument (the guest kernel
-has `CONFIG_IP_PNP=y`), so eth0 is configured before init runs, independent
-of the guest image's network userspace.
+It is the compute half of the Tiko stack: [Tiko](https://github.com/burmecia/tiko)
+supplies the serverless Postgres storage engine, tikovm supplies the VMs it
+runs in. The bundled demo webapp wires them together — every project gets a
+Tiko database VM that freezes when idle and wakes on the first connection.
 
-Auto-suspend: a permanent VM created with an `auto_suspend` config is
-snapshotted (Firecracker process stopped — the VM consumes no CPU or memory,
-only the snapshot files on disk) once it looks idle, and is transparently
-restored by the next proxied HTTP request or `POST /{id}/exec`. Two detector
-paths decide "idle":
+> [!WARNING]
+> **This is a proof-of-concept.** The code is rough, known to be buggy, and
+> APIs/config will change without notice. Expect missing pieces, rough edges,
+> and data-loss scenarios. **Do not use it for anything you care about.**
+> That said, ideas, issues, and contributions are welcome.
 
-- HTTP: the proxy tracks per-VM request activity; a VM with exposed ports
-  suspends after `idle_timeout_secs` without a proxied request.
-- non-HTTP: guestd runs the VM's `idle_check_cmd` every
-  `check_interval_secs` (exit status 0 = idle, e.g. a script checking for
-  established database connections) and forwards the idle event over vsock.
+---
 
-Both paths are gated host-side (permanent mode, `started` state, no
-in-flight proxied requests, post-wake cooldown) before the snapshot happens.
-`auto_suspend` is only accepted for `permanent` VMs:
+## Why tikovm?
 
-```json
-"auto_suspend": {
-    "idle_timeout_secs": 300,
-    "idle_check_cmd": ["/usr/local/sbin/check-idle"],
-    "check_interval_secs": 30
-}
+- 🧱 **VMs that feel like containers.** Create, exec, snapshot, and destroy
+  microVMs over a plain REST API. Boot to a working shell takes under ten
+  seconds: every VM shares a read-only Ubuntu base image and gets a per-VM
+  overlay disk, so there is nothing to copy or install at create time.
+- 📴 **Scales to zero.** An idle VM is snapshotted and its Firecracker process
+  exits — zero CPU, zero memory, just a snapshot file. The next request (or
+  exec, or psql connection) restores it in about a second.
+- 🌐 **Networking you don't configure.** Each project gets its own bridge and
+  /24 subnet, created with its first VM and torn down with its last. The guest
+  IP arrives as a kernel boot argument, so eth0 is up before init runs.
+- 🔌 **A proxy that speaks real protocols.** HTTP reverse proxy *and* the
+  Postgres wire protocol on one listener, with JWT access scoped per VM and
+  port. `psql "host=<proxy> ... options='-c tikovm_token=<jwt>'"` connects
+  straight into a database VM; unexposing a port kills existing tokens.
+- 💾 **Chunked block storage on S3.** A VM can get a dedicated block device
+  backed by chunk files on an [S3 Files](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-files.html)
+  NFS mount, served by a per-VM ublk worker. A guest fsync becomes one NFS
+  COMMIT per dirty chunk; a worker crash looks to the guest exactly like a
+  disk power blip, and the device recovers transparently.
+- ⏰ **Cron-mode VMs.** Give a VM a cron schedule and it wakes up, runs its
+  command as a logged workload, and goes back to sleep — between runs it
+  consumes nothing.
+
+---
+
+## How it works
+
+```mermaid
+%%{init: {"themeVariables": {"titleColor": "#1e293b", "clusterBkg": "#f8fafc", "clusterBorder": "#94a3b8"}}}%%
+flowchart TB
+  Client(["<b>API client</b><br/><small>curl · node client</small>"])
+  Browser(["<b>Browser</b>"])
+  Psql(["<b>psql / HTTP client</b>"])
+
+  subgraph Host ["🖥️ Host (KVM, root)"]
+    direction TB
+    Hostd["<b>hostd</b><br/><small>REST API :3000 · proxy :8080 · networking · storage</small>"]
+    Webapp["<b>webapp :4000</b><br/><small>projects · lambdas · PostgREST</small>"]
+    Vmtop["<b>vmtop</b><br/><small>live TUI</small>"]
+  end
+
+  subgraph VM1 ["🔥 Firecracker microVM — lambda / service"]
+    direction TB
+    Guest1["<b>guestd</b><br/><small>vsock :5000 · workloads · idle check</small>"]
+    App1["<b>user code</b><br/><small>node · python · postgrest</small>"]
+    Guest1 --> App1
+  end
+
+  subgraph VM2 ["🔥 Firecracker microVM — tiko-postgres"]
+    direction TB
+    Guest2["<b>guestd</b><br/><small>vsock :5000 · pg idle check</small>"]
+    PG2["<b>PostgreSQL + Tiko</b><br/><small>S3-backed storage · COW branch</small>"]
+    Guest2 --> PG2
+  end
+
+  S3[("🪣<br/><b>S3-compatible storage</b><br/>(S3 Files)<br/><small>block chunks · seed packs</small>")]
+
+  Client -->|REST + Bearer| Hostd
+  Browser --> Webapp
+  Webapp -->|REST| Hostd
+  Vmtop -->|GET /api/vms| Hostd
+  Psql -->|HTTP / PG wire + JWT| Hostd
+  Hostd <-->|vsock| Guest1
+  Hostd <-->|vsock| Guest2
+  Hostd ==>|ublk chunks · NFS| S3
+  PG2 ==>|data · WAL · NFS| S3
+
+  classDef client fill:#fff7ed,stroke:#f97316,stroke-width:2px,color:#9a3412
+  classDef control fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1e40af
+  classDef vm fill:#f0fdf4,stroke:#22c55e,stroke-width:2px,color:#166534
+  classDef storage fill:#fdf2f8,stroke:#ec4899,stroke-width:2px,color:#9d174d
+
+  class Client,Browser,Psql client
+  class Hostd,Webapp,Vmtop control
+  class Guest1,App1,Guest2,PG2 vm
+  class S3 storage
+
+  style Host fill:#f8fafc,stroke:#94a3b8,stroke-width:2px,stroke-dasharray:5 5
+  style VM1 fill:#f0fdf4,stroke:#22c55e,stroke-width:2px,stroke-dasharray:5 5
+  style VM2 fill:#f0fdf4,stroke:#22c55e,stroke-width:2px,stroke-dasharray:5 5
+  style S3 fill:#fdf2f8,stroke:#ec4899,stroke-width:2px
 ```
 
-`idle_check_cmd` may be empty (HTTP-only), and a VM with neither exposed
-ports nor a check command never suspends.
+- **hostd** — the daemon. REST API, Firecracker driver, per-project bridges
+  and NAT, the JWT-authenticated proxy, chunked block storage, auto-suspend,
+  and the cron scheduler.
+- **guestd** — the guest agent. A 1 MB Rust binary on vsock that runs
+  workloads, streams their output back, and reports idleness. No SSH, no
+  guest network dependency.
+- **vmtop** — a top-style TUI that polls `GET /api/vms`.
+- **webapp** — the demo platform (Express + React): projects with a branched
+  Tiko Postgres, paste-in lambda functions (Node 22 / Python 3.12) with public
+  invoke URLs, and one-click PostgREST APIs over the project database.
+  Everything it does is plain hostd API calls, so it doubles as a reference
+  implementation.
 
-Block storage: a VM created with a `block_storage` config gets a dedicated
-block device (`/dev/vdc`) served by a per-VM `ublk-worker` subprocess
-(hostd re-executing itself with a hidden subcommand, driving the kernel
-ublk driver). Guest IO is mapped onto fixed-size chunk files under
-`<storage-root>/proj-<project_id>/<vm_id>/` (production: an AWS S3 Files
-NFS mount, `--storage-root` default `/mnt/s3files/vm_storage`; missing
-chunks read as zeros). hostd formats a fresh volume ext4 and seeds a
-systemd mount unit into the overlay disk, so the volume is mounted at
-`mount_path` with no guest cooperation:
+---
 
-```json
-"block_storage": {
-    "size_mb": 512,
-    "chunk_kb": 1024,
-    "mount_path": "/mnt/tikovm-data"
-}
+## Repository layout
+
+```
+tikovm/
+├── hostd/          # the daemon: REST API, VMM, networking, storage, proxy
+├── guestd/         # the guest agent: vsock listener, workloads, idle detector
+├── vmtop/          # top-style TUI for the VM inventory
+├── webapp/         # demo platform: projects, lambdas, PostgREST (Express + React)
+├── clients/node/   # official Node.js/TypeScript client (npm package `tikovm`)
+├── scripts/        # run scripts + guest image builds (rootfs/)
+├── tests/          # end-to-end shell tests that boot real VMs
+└── assets/         # boot artifacts: kernel, initramfs, rootfs images
 ```
 
-`chunk_kb` is optional (default 1024; allowed 256/512/1024/2048/4096) and
-`mount_path` may be set to `""` to attach the device raw. The volume dies
-with the VM (destroy deletes the chunk files); snapshot/restore is
-transparent because the worker and device are independent of the
-Firecracker process.
+`hostd` and `guestd` are separate binaries deployed to opposite sides of the
+VM boundary; guestd deliberately avoids async frameworks so it stays small in
+the guest image.
 
-Durability/performance contract (measured on S3 Files): a completed guest
-fsync means every dirty chunk was fdatasynced (one NFS COMMIT per dirty
-chunk, ~9 ms p50 — fine for data volumes, not for fsync-heavy database
-primaries). A worker crash fails in-flight IOs with EIO (the guest's ext4
-replays its journal, exactly as after a disk power blip) and the device is
-transparently recovered by a respawned worker. Expect roughly 300-800
-random 4 KiB IOPS and ~750-960 MiB/s sequential writes per volume on S3
-Files backing; the host page cache absorbs hot working sets.
+---
 
-Schedule mode: a VM created with `"mode": "schedule"`, a `cmd`, and a
-`cron_schedule` (UTC; standard 5-field cron or 6/7 fields with seconds) is
-not started on creation. hostd's cron scheduler wakes it on every fire
-(start, or restore from its snapshot), runs `cmd` as a workload, then
-snapshots it back to `suspended` — so between runs it consumes no CPU or
-memory, only the snapshot files on disk. An optional `timeout_secs` stops a
-run that overruns (SIGTERM, then SIGKILL in the guest); a fire arriving
-while the previous run is still active is skipped, never queued. Each run
-is a regular workload tagged `"origin": "schedule"`, so run history and
-captured logs are queryable through the workloads API
-(`GET /api/vms/{id}/workloads[/{workload_id}/logs]`):
+## Getting started
 
-```json
-"mode": "schedule",
-"cmd": ["sh", "-c", "/usr/local/bin/nightly-job"],
-"cron_schedule": "0 3 * * *",
-"timeout_secs": 3600
+Requires a KVM-enabled Linux host (Ubuntu 24.04 x86 recommended), root (hostd
+creates bridges, iptables rules, and loop-mounts disks), a `firecracker`
+binary on `FIRECRACKER_BIN`, and libclang for the build. AWS EC2 metal
+instances or any host with nested virtualization works.
+
+```bash
+git clone https://github.com/burmecia/tikovm.git
+cd tikovm
+rustup show                       # Rust 1.96+, edition 2024
+
+./scripts/download_kernel.sh              # fetch a Firecracker CI kernel
+./scripts/build_initramfs.sh              # pack the overlayfs initramfs
+./scripts/rootfs/build_rootfs_ubuntu24.sh # build the base guest image
 ```
 
-## Node.js client
+Start the daemon (builds as you, runs via `sudo -E`):
 
-The official Node.js/TypeScript client for the hostd API lives in
-`clients/node/` (npm package `tikovm`). It wraps the `/api` endpoints behind
-a `Tikovm` client with a `client.vms` namespace and per-VM resource objects
-for VM lifecycle management (create/get/list/delete, pause/resume, snapshot/
-restore, exec), the read-only per-VM network config, the exposed-port
-registry with proxy-token minting, and workloads (start/wait/stop/logs with
-`Workload` resource wrappers). Zero runtime dependencies (native `fetch`,
-Node >= 18); see `clients/node/README.md` for usage.
+```bash
+export TIKOVM_HOSTD_API_TOKEN=xxx   # the API's only auth — pick a real one
+./scripts/run_hostd.sh
+```
 
+In another terminal, watch the VM inventory:
+
+```bash
+./scripts/run_vmtop.sh
+```
+
+---
+
+## Try it out
+
+### Create a VM and run a command in it
+
+```bash
+curl -X POST localhost:3000/api/vms \
+  -H "Authorization: Bearer $TIKOVM_HOSTD_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"demo","project_id":"p1","image":"ubuntu-24.04",
+       "mode":"permanent","cpus":1,"memory_mb":256,"disk_size_mb":1024}'
+
+curl -X POST localhost:3000/api/vms/$VM_ID/exec \
+  -H "Authorization: Bearer $TIKOVM_HOSTD_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"cmd":["uname","-a"]}'
+```
+
+### Scale to zero
+
+Create a VM with `auto_suspend` and an exposed port; hit it through the
+proxy, then leave it alone:
+
+```json
+"auto_suspend": { "idle_timeout_secs": 120 },
+"network_config": { "allow_internet": true,
+                    "exposed_ports": [{ "port": 8000, "label": "app" }] }
+```
+
+Two minutes without a request and the VM is a snapshot file. The next
+proxied request restores it — the caller just sees a slower first response.
+For non-HTTP services (like Postgres), an in-guest check command decides
+idleness instead; the `postgres-16` and `tiko-postgres` images ship one that
+watches `pg_stat_activity`.
+
+### The demo webapp
+
+```bash
+cd webapp && npm run setup && TIKOVM_HOSTD_API_TOKEN=$TIKOVM_HOSTD_API_TOKEN npm start
+# open http://<host>:4000
+```
+
+Create a project — ten seconds later it has a running Postgres branched
+copy-on-write from a seed pack. Add a lambda by pasting a script, or a
+PostgREST VM for an instant REST API over every table. Leave it idle and
+everything suspends itself.
+
+### Full test suite
+
+```bash
+./tests/run_all.sh   # boots real VMs: lifecycle, networking, proxy,
+                     # auto-suspend, cron mode, block storage, ...
+```
+
+---
+
+## Roadmap
+
+- [ ] Authentication and multi-user support in the webapp
+- [ ] Publish the Node.js client to npm
+- [ ] CI for the end-to-end suite
+- [ ] Drop `--no-seccomp` and harden the Firecracker jailer setup
+- [ ] Code cleanup and hardening
+
+---
+
+## License
+
+Apache-2.0.

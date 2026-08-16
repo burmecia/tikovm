@@ -243,6 +243,7 @@ impl VmConfig {
         match self.image.as_str() {
             "node-22" => Ok("node-22-rootfs.ext4".to_string()),
             "postgres-16" => Ok("postgres-16-rootfs.ext4".to_string()),
+            "postgrest" => Ok("postgrest-rootfs.ext4".to_string()),
             "python-3.12" => Ok("python-3.12-rootfs.ext4".to_string()),
             "s3files" => Ok("s3files-rootfs.ext4".to_string()),
             "tiko-postgres" => Ok("tiko-postgres-rootfs.ext4".to_string()),

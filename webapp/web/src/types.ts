@@ -1,7 +1,7 @@
 // Types mirroring the webapp server's DTOs (server/src/routes.ts).
 
 export type ProjectStatus = 'provisioning' | 'ready' | 'error' | 'deleting';
-export type VmKind = 'tiko' | 'extra' | 'lambda';
+export type VmKind = 'tiko' | 'extra' | 'lambda' | 'postgrest';
 export type LambdaLanguage = 'node' | 'python';
 export type LambdaStatus = 'deploying' | 'ready' | 'error';
 
@@ -11,6 +11,18 @@ export interface LambdaSummary {
   status: LambdaStatus;
   step: string;
   error: string | null;
+}
+
+export interface PostgrestSummary {
+  slug: string;
+  status: LambdaStatus;
+  step: string;
+  error: string | null;
+}
+
+/** GET /vms/:vmId/postgrest — summary plus the API base path. */
+export interface PostgrestDetail extends PostgrestSummary {
+  apiBase: string;
 }
 
 /** GET /vms/:vmId/lambda — summary plus the deployed source. */
@@ -31,6 +43,7 @@ export interface ProjectVm {
   image: string;
   kind: VmKind;
   lambda?: LambdaSummary;
+  postgrest?: PostgrestSummary;
 }
 
 export interface Project {
@@ -59,6 +72,7 @@ export interface OverviewVm {
   memoryMb: number;
   createdAt: string;
   lambda?: LambdaSummary;
+  postgrest?: PostgrestSummary;
 }
 
 export interface Overview {
@@ -82,4 +96,5 @@ export const EXTRA_IMAGES = ['ubuntu-24'] as const;
 export const LAMBDA_OPTIONS = [
   { value: 'lambda:node', label: 'node-22 (λ lambda)' },
   { value: 'lambda:python', label: 'python-3.12 (λ lambda)' },
+  { value: 'postgrest', label: 'postgrest (REST API)' },
 ] as const;

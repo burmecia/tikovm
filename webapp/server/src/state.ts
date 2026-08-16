@@ -39,14 +39,26 @@ export interface LambdaMeta {
   source: string;
 }
 
+/** PostgREST metadata attached to a `kind: 'postgrest'` VM entry. */
+export interface PostgrestMeta {
+  /** URL slug the API is served at (`/api/demo/pgrst/<slug>/`); immutable. */
+  slug: string;
+  status: LambdaStatus;
+  /** Human-readable current deploy step; empty when idle. */
+  step: string;
+  error: string | undefined;
+}
+
 /** A VM tracked under a project. `kind: 'tiko'` marks the project's database. */
 export interface ProjectVmEntry {
   vmId: string;
   name: string;
   image: string;
-  kind: 'tiko' | 'extra' | 'lambda';
+  kind: 'tiko' | 'extra' | 'lambda' | 'postgrest';
   /** Set for `kind: 'lambda'` entries. */
   lambda?: LambdaMeta;
+  /** Set for `kind: 'postgrest'` entries. */
+  postgrest?: PostgrestMeta;
 }
 
 /** Slug validity: lowercase dns-label-ish, derived from the function name. */
@@ -154,12 +166,15 @@ export class Registry {
     return this.list().find((p) => p.vms.some((v) => v.vmId === vmId));
   }
 
-  /** The VM entry owning the given lambda slug, if any (slugs are unique). */
-  lambdaBySlug(
+  /** The VM entry owning the given URL slug (lambda or postgrest), if any.
+   * Slugs share one uniqueness space across both kinds. */
+  vmBySlug(
     slug: string,
   ): { project: Project; vm: ProjectVmEntry } | undefined {
     for (const p of this.#projects.values()) {
-      const vm = p.vms.find((v) => v.lambda?.slug === slug);
+      const vm = p.vms.find(
+        (v) => v.lambda?.slug === slug || v.postgrest?.slug === slug,
+      );
       if (vm) {
         return { project: p, vm };
       }
@@ -167,9 +182,9 @@ export class Registry {
     return undefined;
   }
 
-  /** Whether a lambda slug is already taken. */
+  /** Whether a slug is already taken (by a lambda or a postgrest VM). */
   slugTaken(slug: string): boolean {
-    return this.lambdaBySlug(slug) !== undefined;
+    return this.vmBySlug(slug) !== undefined;
   }
 
   /**

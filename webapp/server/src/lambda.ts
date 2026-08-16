@@ -30,8 +30,9 @@ import {
   execUntil,
   rawGetVm,
   waitForState,
+  writeGuestFile,
 } from './hostd.js';
-import { psqlArgv } from './provision.js';
+import { ensureTikoAwake } from './provision.js';
 import type {
   LambdaLanguage,
   Project,
@@ -264,25 +265,6 @@ WantedBy=multi-user.target
 `;
 }
 
-// ── guest file helpers ────────────────────────────────────────────────────
-
-/** Write a file in the guest via base64 (no shell-quoting pitfalls). */
-async function writeGuestFile(
-  client: Tikovm,
-  vmId: string,
-  path: string,
-  content: string,
-): Promise<void> {
-  const b64 = Buffer.from(content, 'utf8').toString('base64');
-  const dir = path.slice(0, path.lastIndexOf('/'));
-  await execOk(
-    client,
-    vmId,
-    ['bash', '-c', `mkdir -p '${dir}' && printf %s '${b64}' | base64 -d > '${path}'`],
-    `write ${path}`,
-  );
-}
-
 // ── provision ─────────────────────────────────────────────────────────────
 
 /**
@@ -447,13 +429,7 @@ export async function invokeLambda(
       `lambda ${meta.slug} is not ready (status: ${meta.status})`,
     );
   }
-  const tikoVm = project.vms.find((v) => v.kind === 'tiko');
-  if (tikoVm) {
-    const tiko = await rawGetVm(cfg, tikoVm.vmId);
-    if (tiko.state !== 'started') {
-      await execOk(client, tikoVm.vmId, psqlArgv('select 1'), 'wake tiko postgres');
-    }
-  }
+  await ensureTikoAwake(cfg, client, project);
   const { token } = await client.vms
     .ports(entry.vmId)
     .token(LAMBDA_PORT, { proto: 'http', ttl_secs: 60 });

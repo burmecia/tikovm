@@ -64,7 +64,7 @@ export async function waitForState(
   vmId: string,
   target: VmState,
   timeoutMs: number,
-  intervalMs = 2_000,
+  intervalMs = 1_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -122,7 +122,7 @@ export async function execUntil(
   cmd: string[],
   what: string,
   timeoutMs = 240_000,
-  intervalMs = 3_000,
+  intervalMs = 1_000,
 ): Promise<ExecResult> {
   const deadline = Date.now() + timeoutMs;
   let last: ExecResult | undefined;
@@ -156,6 +156,23 @@ export async function deleteVmIfExists(client: Tikovm, vmId: string): Promise<vo
     }
     throw err;
   }
+}
+
+/** Write a file in the guest via base64 (no shell-quoting pitfalls). */
+export async function writeGuestFile(
+  client: Tikovm,
+  vmId: string,
+  path: string,
+  content: string,
+): Promise<void> {
+  const b64 = Buffer.from(content, 'utf8').toString('base64');
+  const dir = path.slice(0, path.lastIndexOf('/'));
+  await execOk(
+    client,
+    vmId,
+    ['bash', '-c', `mkdir -p '${dir}' && printf %s '${b64}' | base64 -d > '${path}'`],
+    `write ${path}`,
+  );
 }
 
 /** Run a login shell as the postgres user (postgres refuses to run as root). */

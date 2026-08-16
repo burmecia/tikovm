@@ -111,6 +111,12 @@ export default function App() {
                 'lambda deploy started — follow it in the project list',
               );
             }
+            if (image === 'postgrest') {
+              return run(
+                () => api.createPostgrest(projectId, name || 'postgrest'),
+                'postgrest deploy started — follow it in the project list',
+              );
+            }
             return run(() => api.createVm(projectId, { name, image }), 'VM creation started');
           }}
         />

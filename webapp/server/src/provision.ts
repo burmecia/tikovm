@@ -39,6 +39,7 @@ import {
   execInVm,
   execOk,
   execUntil,
+  rawGetVm,
   waitForState,
 } from './hostd.js';
 import type { Project, Registry } from './state.js';
@@ -54,6 +55,30 @@ import {
 } from './tikoenv.js';
 
 export const TIKO_IMAGE = 'tiko-postgres';
+
+/**
+ * Wake the project's tiko postgres VM if it is suspended (its own
+ * auto-suspend fires independently of its consumers). Nothing guest-side
+ * can wake it — hostd owns that — so DB-facing VMs (lambdas, PostgREST)
+ * must go through here before serving a request. The exec restores the VM
+ * transparently and the `select 1` both blocks until guestd answers and
+ * verifies postgres accepts connections, so callers can connect right away.
+ * No-op when the project has no tiko VM or it is already started.
+ */
+export async function ensureTikoAwake(
+  cfg: Config,
+  client: Tikovm,
+  project: Project,
+): Promise<void> {
+  const tikoVm = project.vms.find((v) => v.kind === 'tiko');
+  if (!tikoVm) {
+    return;
+  }
+  const tiko = await rawGetVm(cfg, tikoVm.vmId);
+  if (tiko.state !== 'started') {
+    await execOk(client, tikoVm.vmId, psqlArgv('select 1'), 'wake tiko postgres');
+  }
+}
 
 /** Guest port the project's tiko postgres listens on; exposed at creation so
  * the proxy can forward psql connections (JWT in `tikovm_token`). */
@@ -192,23 +217,25 @@ async function provisionTikoVm(
     setStep('waiting for the VM to boot');
     await waitForState(client, vm.id, 'started', 180_000);
 
+    // The mount wait and the tiko.env write are independent — run them
+    // concurrently (the mount comes up during the tail of the guest boot,
+    // so this overlaps almost the whole wait with useful work).
     setStep('waiting for the S3 Files mount');
-    await execUntil(
-      client,
-      vm.id,
-      ['mountpoint', '-q', '/mnt/s3files'],
-      'the S3 Files mount',
-      240_000,
-    );
-
-    setStep('writing the per-project tiko.env');
     const env = buildTikoEnv({
       orgId: cfg.orgId,
       dbId: project.dbId,
       projectId: project.id,
       vmId: vm.id,
     });
+    const mountReady = execUntil(
+      client,
+      vm.id,
+      ['mountpoint', '-q', '/mnt/s3files'],
+      'the S3 Files mount',
+      240_000,
+    );
     await execOk(client, vm.id, tikoEnvWriteCmd(env), 'tiko.env write');
+    await mountReady;
 
     // Branch the project's database from the pack. Runs as the postgres user
     // (restore creates PGDATA 0700 and drives pg_ctl, which refuses root);

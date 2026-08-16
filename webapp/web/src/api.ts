@@ -6,6 +6,7 @@ import type {
   LambdaDetail,
   LambdaInvokeResult,
   Overview,
+  PostgrestDetail,
   Project,
 } from './types';
 
@@ -82,6 +83,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+
+  createPostgrest: (projectId: number, name: string) =>
+    call<Project>(`/api/demo/projects/${projectId}/postgrest`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+
+  getPostgrest: (vmId: string) =>
+    call<PostgrestDetail>(`/api/demo/vms/${vmId}/postgrest`),
 
   getLambda: (vmId: string) => call<LambdaDetail>(`/api/demo/vms/${vmId}/lambda`),
 

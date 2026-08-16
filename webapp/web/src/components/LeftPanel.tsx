@@ -105,6 +105,10 @@ export default function LeftPanel({
               )}
               {p.vms.map((vm) => {
                 const state = vmStates[vm.vmId] ?? 'unknown';
+                // Lambdas and postgrest VMs carry a deploy lifecycle
+                // (deploying → ready | error) on top of the VM state.
+                const meta = vm.lambda ?? vm.postgrest;
+                const prefix = vm.lambda ? 'λ ' : vm.postgrest ? 'api ' : '';
                 return (
                   <li
                     key={vm.vmId || `pending-${vm.name}`}
@@ -113,19 +117,19 @@ export default function LeftPanel({
                   >
                     <span className={`dot ${stateClass(state)}`} title={state} />
                     <span className="vm-name">
-                      {vm.lambda ? `λ ${vm.name}` : vm.name}
+                      {prefix}{vm.name}
                     </span>
                     <span className="mono dim">{vm.image}</span>
-                    {vm.lambda ? (
+                    {meta ? (
                       <span
-                        className={`badge ${vm.lambda.status === 'ready' ? stateClass(state) : vm.lambda.status === 'error' ? 'st-destroyed' : 'st-transitional'}`}
-                        title={vm.lambda.error ?? vm.lambda.step ?? undefined}
+                        className={`badge ${meta.status === 'ready' ? stateClass(state) : meta.status === 'error' ? 'st-destroyed' : 'st-transitional'}`}
+                        title={meta.error ?? meta.step ?? undefined}
                       >
-                        {vm.lambda.status === 'ready'
+                        {meta.status === 'ready'
                           ? state
-                          : vm.lambda.status === 'error'
+                          : meta.status === 'error'
                             ? 'deploy error'
-                            : `deploying·${vm.lambda.step || '…'}`}
+                            : `deploying·${meta.step || '…'}`}
                       </span>
                     ) : (
                       <span className={`badge ${stateClass(state)}`}>{state}</span>

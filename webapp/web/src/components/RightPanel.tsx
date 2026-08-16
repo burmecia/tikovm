@@ -45,9 +45,12 @@ export default function RightPanel({
   const [curlCopied, setCurlCopied] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [connState, setConnState] = useState<'idle' | 'copying' | 'copied'>('idle');
+  const [pgrstCopied, setPgrstCopied] = useState(false);
   const isTiko = vm.kind === 'tiko';
   const isLambda = vm.kind === 'lambda';
+  const isPostgrest = vm.kind === 'postgrest';
   const lambda = vm.lambda;
+  const pgrst = vm.postgrest;
 
   // Load the deployed handler source once per selected lambda VM.
   useEffect(() => {
@@ -200,6 +203,43 @@ export default function RightPanel({
         </>
       )}
 
+      {isPostgrest && pgrst && (
+        <>
+          <div className="section-title">postgrest REST api</div>
+          {pgrst.status !== 'ready' && (
+            <div className={pgrst.status === 'error' ? 'project-error' : 'hint dim'}>
+              {pgrst.status === 'error'
+                ? `deploy failed: ${pgrst.error ?? 'unknown error'}`
+                : `deploying: ${pgrst.step || 'queued'}…`}
+            </div>
+          )}
+          <div className="button-row">
+            <button
+              className={pgrstCopied ? 'copied' : ''}
+              onClick={() => {
+                const base = `${window.location.origin}/api/demo/pgrst/${pgrst.slug}`;
+                void navigator.clipboard.writeText(`curl ${base}/<table>`);
+                setPgrstCopied(true);
+                setTimeout(() => setPgrstCopied(false), 1500);
+              }}
+              title="copy a curl command for the REST API (replace <table>)"
+            >
+              {pgrstCopied ? 'copied ✓' : 'copy curl command'}
+            </button>
+          </div>
+          <div className="hint mono dim">
+            {window.location.origin}/api/demo/pgrst/{pgrst.slug}/&lt;table&gt;
+          </div>
+          <div className="hint dim">
+            full REST API over the project's tiko postgres (public schema):
+            GET/POST/PATCH/DELETE on any table, PostgREST filters via query
+            params (?id=eq.1&amp;select=…). The VM auto-suspends after 2
+            minutes without a request; the next request wakes it (and the
+            database VM) — cold start ~1s.
+          </div>
+        </>
+      )}
+
       {isTiko && (
         <>
           <div className="section-title">connect</div>
@@ -274,7 +314,7 @@ export default function RightPanel({
         </>
       )}
 
-      {!isTiko && !isLambda && (
+      {!isTiko && !isLambda && !isPostgrest && (
         <>
           <div className="section-title">exec in guest</div>
           <form

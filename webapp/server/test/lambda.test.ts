@@ -47,11 +47,28 @@ describe('Registry lambda lookups', () => {
     a.vms.push(entry);
     b.vms.push({ vmId: 'vm-b1', name: 'web', image: 'node-22', kind: 'extra' });
 
-    const found = registry.lambdaBySlug('read-db');
+    const found = registry.vmBySlug('read-db');
     assert.equal(found?.project, a);
     assert.equal(found?.vm, entry);
     assert.equal(registry.slugTaken('read-db'), true);
     assert.equal(registry.slugTaken('other'), false);
-    assert.equal(registry.lambdaBySlug('other'), undefined);
+    assert.equal(registry.vmBySlug('other'), undefined);
+  });
+
+  it('shares the slug namespace between lambdas and postgrest VMs', () => {
+    const registry = new Registry();
+    const a = registry.newProject('a', 60_000);
+    a.vms.push(lambdaEntry('vm-l1', 'fn', 'python'));
+    a.vms.push({
+      vmId: 'vm-p1',
+      name: 'api',
+      image: 'postgrest',
+      kind: 'postgrest',
+      postgrest: { slug: 'api', status: 'ready', step: '', error: undefined },
+    });
+
+    assert.equal(registry.vmBySlug('api')?.vm.vmId, 'vm-p1');
+    assert.equal(registry.vmBySlug('fn')?.vm.vmId, 'vm-l1');
+    assert.equal(registry.slugTaken('api'), true);
   });
 });

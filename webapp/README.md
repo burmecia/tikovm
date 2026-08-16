@@ -46,6 +46,28 @@ at build time, so deploying is boot + a few file writes.
   `TIKO_DB_USER` env, written at provision; same subnet, pg_hba-trusted,
   no password).
 
+## PostgREST database APIs
+
+Pick `postgrest (REST API)` in a ready project's "+ VM" form to get a full
+REST API over the project's tiko postgres — no code required. The VM runs
+the baked-in PostgREST binary (systemd, port 3000) pointed at the project's
+database (`public` schema, anonymous role = postgres, demo-only trust).
+
+- **request**: `ANY /api/demo/pgrst/<slug>/<table>[?filters]` — public, same
+  model as lambda invokes. PostgREST semantics apply end to end: filters
+  (`?done=eq.false&select=id,task`), inserts/updates with JSON bodies,
+  `Prefer: return=representation|count=exact` (forwarded, `content-range`
+  returned), pagination. The right panel's "copy curl command" copies a
+  ready-to-run `curl <base>/<table>`.
+- **auto-suspend**: same as lambdas — 120s idle → snapshot; the next
+  request restores the VM (~1s) and wakes the project's tiko postgres VM
+  first if it is suspended too.
+- **schema changes**: PostgREST loads its schema cache at startup, so a
+  table/column created after the VM booted is invisible at first. The proxy
+  detects the stale-cache errors (PGRST204/PGRST205), asks PostgREST to
+  reload (SIGUSR1), and retries transparently — the first request after a
+  schema change just takes a couple of seconds longer.
+
 ## What a "project" is
 
 Creating a project automatically provisions one **tiko postgres VM**: boot →
@@ -58,8 +80,9 @@ image's `start_pg.sh`. The project turns `ready` with the database running, so
 the SQL panel works immediately. The tiko VM is created with **auto-suspend**:
 after 120s without client connections hostd snapshots it (the Firecracker
 process stops, consuming no CPU/memory) and the next SQL/exec request
-transparently restores it. Extra VMs (`ubuntu-24`) and lambda functions
-(node-22 / python-3.12 — see below) can be added alongside.
+transparently restores it. Extra VMs (`ubuntu-24`), lambda functions
+(node-22 / python-3.12) and PostgREST database APIs can be added alongside
+(see below).
 
 ### Database branching
 
@@ -96,7 +119,7 @@ tag); hostd tears down the per-project bridges with the last VM.
   it). Serves the SPA and the `/api/demo` REST surface. Reuses the official
   Node client (`tikovm`, `file:../../clients/node`) for all hostd traffic.
   `lambda.ts` owns the lambda runtime sources, provisioning, deploy and
-  invoke path.
+  invoke path; `postgrest.ts` the PostgREST provisioning and REST proxy.
 - `web/` — React + Vite frontend (3 panels, polling `/api/demo/overview`).
 
 ## Setup & run

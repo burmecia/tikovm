@@ -361,6 +361,11 @@ blindly:
   `pg` npm package installed into `/opt/lambda` via a chrooted npm install
   (the driver webapp lambda functions use), producing
   `node-22-rootfs.ext4`.
+- `rootfs/build_rootfs_postgrest.sh` — same base plus the static PostgREST
+  binary (official GitHub release) in `/usr/local/bin`, producing
+  `postgrest-rootfs.ext4`. The webapp provisions these VMs as REST APIs
+  over the project's tiko postgres (`webapp/server/src/postgrest.ts` writes
+  the per-VM `postgrest.conf` with the tiko guest IP).
 - `rootfs/build_rootfs_postgres16.sh` — same base plus PostgreSQL 16
   (noble's stock `postgresql` package), producing
   `postgres-16-rootfs.ext4`. The package's postinst creates the default

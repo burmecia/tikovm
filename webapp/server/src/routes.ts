@@ -25,6 +25,12 @@ import {
   provisionLambda,
 } from './lambda.js';
 import {
+  PGRST_IMAGE,
+  PostgrestNotReady,
+  provisionPostgrest,
+  proxyPostgrest,
+} from './postgrest.js';
+import {
   EXTRA_IMAGES,
   TIKO_IMAGE,
   TIKO_PG_PORT,
@@ -39,6 +45,7 @@ import type {
   BranchOrigin,
   LambdaLanguage,
   LambdaMeta,
+  PostgrestMeta,
   Project,
   ProjectStatus,
   Registry,
@@ -56,12 +63,21 @@ export interface LambdaSummaryDto {
   error: string | null;
 }
 
+/** PostgREST summary embedded in VM DTOs. */
+export interface PostgrestSummaryDto {
+  slug: string;
+  status: PostgrestMeta['status'];
+  step: string;
+  error: string | null;
+}
+
 export interface ProjectVmDto {
   vmId: string;
   name: string;
   image: string;
-  kind: 'tiko' | 'extra' | 'lambda';
+  kind: 'tiko' | 'extra' | 'lambda' | 'postgrest';
   lambda?: LambdaSummaryDto;
+  postgrest?: PostgrestSummaryDto;
 }
 
 export interface ProjectDto {
@@ -82,13 +98,14 @@ export interface OverviewVmDto {
   name: string;
   projectId: number;
   image: string;
-  kind: 'tiko' | 'extra' | 'lambda';
+  kind: 'tiko' | 'extra' | 'lambda' | 'postgrest';
   state: string;
   guestIp: string | null;
   cpus: number;
   memoryMb: number;
   createdAt: string;
   lambda?: LambdaSummaryDto;
+  postgrest?: PostgrestSummaryDto;
 }
 
 export interface OverviewDto {
@@ -122,7 +139,11 @@ function toProjectDto(p: Project): ProjectDto {
     createdAt: p.createdAt,
     expiresInSeconds: Math.max(0, Math.round((p.expiresAt - Date.now()) / 1000)),
     branchedFrom: p.branchedFrom ?? null,
-    vms: p.vms.map((v) => ({ ...v, lambda: lambdaSummary(v.lambda) })),
+    vms: p.vms.map((v) => ({
+      ...v,
+      lambda: lambdaSummary(v.lambda),
+      postgrest: postgrestSummary(v.postgrest),
+    })),
   };
 }
 
@@ -142,8 +163,41 @@ function lambdaSummary(
   };
 }
 
+/** Shallow postgrest summary for DTOs. */
+function postgrestSummary(
+  meta: PostgrestMeta | undefined,
+): PostgrestSummaryDto | undefined {
+  if (!meta) {
+    return undefined;
+  }
+  return {
+    slug: meta.slug,
+    status: meta.status,
+    step: meta.step,
+    error: meta.error ?? null,
+  };
+}
+
 function fail(res: Response, status: number, message: string): void {
   res.status(status).json({ error: { code: status, message } });
+}
+
+/**
+ * Read a request body as text. Only JSON content-types were consumed by the
+ * app-level express.json (it still sets req.body = {} when the content-type
+ * doesn't match, so key on the header, not req.body); anything else is
+ * still on the wire — collect it raw.
+ */
+async function readBodyText(req: Request): Promise<string> {
+  const ct = String(req.headers['content-type'] ?? '');
+  if (ct.includes('application/json') && req.body !== undefined) {
+    return typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+  }
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 /** Wrap an async handler: hostd errors keep their status, others become 500. */
@@ -161,7 +215,7 @@ function handle(
         fail(res, err.status, err.message);
         return;
       }
-      if (err instanceof LambdaNotReady) {
+      if (err instanceof LambdaNotReady || err instanceof PostgrestNotReady) {
         fail(res, 409, err.message);
         return;
       }
@@ -212,6 +266,7 @@ export function apiRouter(deps: ApiDeps): Router {
             memoryMb: v.vm_config.memory_mb,
             createdAt: v.created_at,
             lambda: lambdaSummary(entry?.lambda),
+            postgrest: postgrestSummary(entry?.postgrest),
           };
         }),
       };
@@ -533,30 +588,15 @@ export function apiRouter(deps: ApiDeps): Router {
   router.all(
     '/f/:slug',
     handle(async (req, res) => {
-      const found = registry.lambdaBySlug(req.params.slug);
+      const found = registry.vmBySlug(req.params.slug);
       if (!found || !found.vm.lambda) {
         return fail(res, 404, `no lambda named "${req.params.slug}"`);
-      }
-      // Body handling: only JSON content-types were consumed by the
-      // app-level express.json (it still sets req.body = {} when the
-      // content-type doesn't match, so key on the header, not req.body);
-      // anything else is still on the wire — collect it raw.
-      const ct = String(req.headers['content-type'] ?? '');
-      let body: string;
-      if (ct.includes('application/json') && req.body !== undefined) {
-        body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
-      } else {
-        const chunks: Buffer[] = [];
-        for await (const chunk of req) {
-          chunks.push(chunk as Buffer);
-        }
-        body = Buffer.concat(chunks).toString('utf8');
       }
       const q = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
       const result = await invokeLambda(cfg, client, found.project, found.vm, {
         method: req.method,
         queryString: q,
-        body,
+        body: await readBodyText(req),
       });
       res
         .status(result.status)
@@ -565,6 +605,99 @@ export function apiRouter(deps: ApiDeps): Router {
         .send(result.body);
     }),
   );
+
+  router.post(
+    '/projects/:id/postgrest',
+    handle(async (req, res) => {
+      const project = registry.get(Number(req.params.id));
+      if (!project) {
+        return fail(res, 404, `project ${req.params.id} not found`);
+      }
+      // Provisioning needs the project's tiko postgres guest IP, so the
+      // project must be fully up (the UI only offers this when ready).
+      if (project.status !== 'ready') {
+        return fail(res, 409, `project ${project.id} is not ready (status: ${project.status})`);
+      }
+      const name =
+        typeof req.body?.name === 'string' && req.body.name.trim()
+          ? req.body.name.trim().slice(0, 64)
+          : 'postgrest';
+      const slug = toSlug(name);
+      if (!slug) {
+        return fail(res, 400, `cannot derive a URL slug from "${name}"`);
+      }
+      if (registry.slugTaken(slug)) {
+        return fail(res, 409, `a lambda or postgrest named "${slug}" already exists`);
+      }
+      // Placeholder vmId: filled in by provisionPostgrest as soon as hostd
+      // answers the create call.
+      const entry = {
+        vmId: '',
+        name,
+        image: PGRST_IMAGE,
+        kind: 'postgrest' as const,
+        postgrest: {
+          slug,
+          status: 'deploying' as const,
+          step: 'queued',
+          error: undefined,
+        },
+      };
+      project.vms.push(entry);
+      console.log(`[webapp] deploying postgrest ${slug} in project ${project.id}`);
+      void provisionPostgrest(cfg, client, project, entry);
+      res.status(202).json(toProjectDto(project));
+    }),
+  );
+
+  router.get(
+    '/vms/:vmId/postgrest',
+    handle(async (req, res) => {
+      const entry = registry.vmOwner(req.params.vmId)?.vms.find(
+        (v) => v.vmId === req.params.vmId,
+      );
+      if (!entry?.postgrest) {
+        return fail(res, 404, `VM ${req.params.vmId} is not a postgrest VM`);
+      }
+      res.json({
+        ...postgrestSummary(entry.postgrest),
+        apiBase: `/api/demo/pgrst/${entry.postgrest.slug}/`,
+      });
+    }),
+  );
+
+  // The public REST API URL, proxied to the VM's PostgREST (all table
+  // paths). Unauthenticated by design, same as the lambda invoke URL.
+  const pgrstProxy = handle(async (req, res) => {
+    const found = registry.vmBySlug(req.params.slug);
+    if (!found || !found.vm.postgrest) {
+      return fail(res, 404, `no postgrest named "${req.params.slug}"`);
+    }
+    const sub = (req.params[0] as string | undefined) ?? '';
+    const q = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+    const result = await proxyPostgrest(cfg, client, found.project, found.vm, {
+      method: req.method,
+      path: `/${sub}`,
+      queryString: q,
+      body: await readBodyText(req),
+      contentType: req.headers['content-type'],
+      headers: {
+        accept: typeof req.headers.accept === 'string' ? req.headers.accept : undefined,
+        prefer: typeof req.headers.prefer === 'string' ? req.headers.prefer : undefined,
+        range: typeof req.headers.range === 'string' ? req.headers.range : undefined,
+      },
+    });
+    res
+      .status(result.status)
+      .set('content-type', result.contentType)
+      .set('x-postgrest-duration-ms', String(result.durationMs));
+    if (result.contentRange) {
+      res.set('content-range', result.contentRange);
+    }
+    res.send(result.body);
+  });
+  router.all('/pgrst/:slug', pgrstProxy);
+  router.all('/pgrst/:slug/*', pgrstProxy);
 
   return router;
 }

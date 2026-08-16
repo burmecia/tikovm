@@ -15,7 +15,7 @@ interface Props {
   onDelete: () => void;
   onExec: (cmd: string) => Promise<ExecResult | null>;
   onSql: (sql: string) => Promise<ExecResult | null>;
-  onCopyConnStr: () => void;
+  onCopyConnStr: () => Promise<boolean>;
   onBranch: (name: string) => void;
   onLoadLambda: () => Promise<LambdaDetail | null>;
   onSaveLambda: (source: string) => Promise<boolean>;
@@ -44,6 +44,7 @@ export default function RightPanel({
   const [invokeBody, setInvokeBody] = useState('');
   const [curlCopied, setCurlCopied] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [connState, setConnState] = useState<'idle' | 'copying' | 'copied'>('idle');
   const isTiko = vm.kind === 'tiko';
   const isLambda = vm.kind === 'lambda';
   const lambda = vm.lambda;
@@ -203,7 +204,25 @@ export default function RightPanel({
         <>
           <div className="section-title">connect</div>
           <div className="button-row">
-            <button onClick={onCopyConnStr}>copy psql connection string</button>
+            <button
+              className={connState === 'copied' ? 'copied' : ''}
+              disabled={connState !== 'idle'}
+              onClick={() => {
+                setConnState('copying');
+                void onCopyConnStr().then((ok) => {
+                  setConnState(ok ? 'copied' : 'idle');
+                  if (ok) {
+                    setTimeout(() => setConnState('idle'), 1500);
+                  }
+                });
+              }}
+            >
+              {connState === 'copying'
+                ? 'copying…'
+                : connState === 'copied'
+                  ? 'copied ✓'
+                  : 'copy psql connection string'}
+            </button>
           </div>
           <div className="hint dim">
             mints a 1-hour proxy token and copies a psql command that connects

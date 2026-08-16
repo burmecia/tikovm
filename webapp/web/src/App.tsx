@@ -179,25 +179,25 @@ export default function App() {
                 void refresh();
               }
             }}
-            onCopyConnStr={() => {
-              void (async () => {
-                try {
-                  const { connectionString, expiresAt } = await api.connectionString(
-                    selectedVm.vmId,
-                  );
-                  await navigator.clipboard.writeText(connectionString);
-                  const expiry = new Date(expiresAt).toLocaleTimeString();
-                  setBanner({
-                    kind: 'info',
-                    text: `psql connection string copied to clipboard — valid until ${expiry} (1 hour)`,
-                  });
-                } catch (err) {
-                  setBanner({
-                    kind: 'error',
-                    text: err instanceof Error ? err.message : String(err),
-                  });
-                }
-              })();
+            onCopyConnStr={async () => {
+              try {
+                const { connectionString, expiresAt } = await api.connectionString(
+                  selectedVm.vmId,
+                );
+                await navigator.clipboard.writeText(connectionString);
+                const expiry = new Date(expiresAt).toLocaleTimeString();
+                setBanner({
+                  kind: 'info',
+                  text: `psql connection string copied to clipboard — valid until ${expiry} (1 hour)`,
+                });
+                return true;
+              } catch (err) {
+                setBanner({
+                  kind: 'error',
+                  text: err instanceof Error ? err.message : String(err),
+                });
+                return false;
+              }
             }}
           />
         ) : (

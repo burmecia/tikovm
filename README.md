@@ -61,19 +61,19 @@ flowchart TB
 
   subgraph VM1 ["🔥 Firecracker microVM — lambda / service"]
     direction TB
-    Guest1["<b>guestd</b><br/><small>vsock · workloads<br/>idle check</small>"]
-    App1["<b>user code</b><br/><small>node · python<br/>postgrest</small>"]
+    Guest1["<b>guestd</b><br/><small>vsock · workloads&nbsp;&nbsp;<br/>idle check</small>"]
+    App1["<b>user code&nbsp;&nbsp;</b><br/><small>node · python<br/>postgrest</small>"]
     Guest1 --> App1
   end
 
   subgraph VM2 ["🔥 Firecracker microVM — tiko-postgres"]
     direction TB
-    Guest2["<b>guestd</b><br/><small>vsock · pg idle check</small>"]
-    PG2["<b>PostgreSQL + Tiko</b><br/><small>S3 storage · COW branch</small>"]
+    Guest2["<b>guestd</b><br/><small>vsock · pg idle check&nbsp;&nbsp;</small>"]
+    PG2["<b>PostgreSQL + Tiko</b><br/><small>S3 storage · COW branch&nbsp;&nbsp;</small>"]
     Guest2 --> PG2
   end
 
-  S3[("🪣<br/><b>S3 storage</b><br/>(S3 Files)<br/><small>database files · seed packs</small>")]
+  S3[("🪣<br/><b>S3 storage</b><br/>(S3 Files)<br/><small>db files · seed packs</small>")]
 
   Client -->|REST + Bearer| Hostd
   Browser --> Webapp

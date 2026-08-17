@@ -21,6 +21,7 @@ export interface RawVmInstance {
     image: string;
     cpus: number;
     memory_mb: number;
+    disk_size_mb: number;
     tags: string[];
   };
 }

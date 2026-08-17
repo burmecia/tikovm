@@ -200,7 +200,7 @@ async function provisionTikoVm(
       mode: 'permanent',
       cpus: 1,
       memory_mb: 512,
-      disk_size_mb: 1024,
+      disk_size_mb: 2048,
       network_config: {
         allow_internet: true,
         // Expose postgres so the proxy accepts connections to it (the UI's

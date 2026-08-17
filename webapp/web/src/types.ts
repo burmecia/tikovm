@@ -70,6 +70,7 @@ export interface OverviewVm {
   guestIp: string | null;
   cpus: number;
   memoryMb: number;
+  diskMb: number;
   createdAt: string;
   lambda?: LambdaSummary;
   postgrest?: PostgrestSummary;

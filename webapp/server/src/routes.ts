@@ -103,6 +103,7 @@ export interface OverviewVmDto {
   guestIp: string | null;
   cpus: number;
   memoryMb: number;
+  diskMb: number;
   createdAt: string;
   lambda?: LambdaSummaryDto;
   postgrest?: PostgrestSummaryDto;
@@ -264,6 +265,7 @@ export function apiRouter(deps: ApiDeps): Router {
             guestIp: v.net?.guest_ip ?? null,
             cpus: v.vm_config.cpus,
             memoryMb: v.vm_config.memory_mb,
+            diskMb: v.vm_config.disk_size_mb,
             createdAt: v.created_at,
             lambda: lambdaSummary(entry?.lambda),
             postgrest: postgrestSummary(entry?.postgrest),

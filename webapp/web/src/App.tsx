@@ -4,6 +4,7 @@ import { copyText } from './clipboard';
 import LeftPanel from './components/LeftPanel';
 import RightPanel from './components/RightPanel';
 import TopPanel from './components/TopPanel';
+import WelcomePopup from './components/WelcomePopup';
 import type { ExecResult, Overview, Project, OverviewVm } from './types';
 
 interface Banner {
@@ -15,6 +16,14 @@ export default function App() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [selectedVmId, setSelectedVmId] = useState<string | null>(null);
   const [banner, setBanner] = useState<Banner | null>(null);
+  // First visit (no localStorage flag) → show the welcome popup.
+  const [welcomeOpen, setWelcomeOpen] = useState(
+    () => localStorage.getItem('tikovm-welcome-seen') === null,
+  );
+  const closeWelcome = () => {
+    localStorage.setItem('tikovm-welcome-seen', '1');
+    setWelcomeOpen(false);
+  };
 
   // 1s poll with an in-flight guard (skip overlapping requests).
   const inFlight = useRef(false);
@@ -91,6 +100,13 @@ export default function App() {
         <span className={`hostd ${overview ? (overview.hostdReachable ? 'ok' : 'err') : ''}`}>
           hostd {overview ? (overview.hostdReachable ? '●' : '○') : '…'}
         </span>
+        <button
+          className="info-btn"
+          onClick={() => setWelcomeOpen(true)}
+          title="about this demo"
+        >
+          ⓘ
+        </button>
       </header>
       <main className="main">
         <TopPanel vms={vms} selectedVmId={selectedVmId} onSelect={setSelectedVmId} />
@@ -245,6 +261,7 @@ export default function App() {
           {banner.text}
         </div>
       )}
+      {welcomeOpen && <WelcomePopup onClose={closeWelcome} />}
     </div>
   );
 }

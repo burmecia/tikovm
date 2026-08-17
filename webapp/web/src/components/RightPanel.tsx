@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { copyText } from '../clipboard';
-import { formatAge } from '../format';
+import { formatAge, formatMiB } from '../format';
 import type {
   ExecResult,
   LambdaDetail,
@@ -93,9 +93,9 @@ export default function RightPanel({
         </span>
         <span className="k">ip</span>
         <span className="v mono">{vm.guestIp ?? '—'}</span>
-        <span className="k">cpu / mem</span>
+        <span className="k">cpu / mem / disk</span>
         <span className="v">
-          {vm.cpus} vCPU · {vm.memoryMb} MiB
+          {vm.cpus} vCPU · {formatMiB(vm.memoryMb)} · {formatMiB(vm.diskMb)}
         </span>
         <span className="k">age</span>
         <span className="v">{formatAge(vm.createdAt)}</span>

@@ -56,12 +56,12 @@ flowchart TB
     direction TB
     Hostd["<b>hostd</b><br/><small>REST API :3000 · proxy :8080 · networking</small>"]
     Webapp["<b>webapp :4000</b><br/><small>projects · lambdas<br/>PostgREST</small>"]
-    Vmtop["<b>vmtop</b><br/><small>live TUI</small>"]
+    Vmtop["<b>vmtop - live TUI</b>"]
   end
 
   subgraph VM1 ["🔥 Firecracker microVM — lambda / service"]
     direction TB
-    Guest1["<b>guestd</b><br/><small>vsock · workloads · idle check</small>"]
+    Guest1["<b>guestd</b><br/><small>vsock · workloads<br/>idle check</small>"]
     App1["<b>user code</b><br/><small>node · python<br/>postgrest</small>"]
     Guest1 --> App1
   end
@@ -83,7 +83,7 @@ flowchart TB
   Hostd <-->|vsock| Guest1
   Hostd <-->|vsock| Guest2
   PG2 ==>|data · WAL · NFS| S3
-  PG1 ==>|data · NFS| S3
+  App1 ==>|data · NFS| S3
 
   classDef client fill:#fff7ed,stroke:#f97316,stroke-width:2px,color:#9a3412
   classDef control fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1e40af

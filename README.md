@@ -1,15 +1,15 @@
-# tikovm
+# Tikovm - Firecracker microVM platform
 
-**Firecracker microVMs with a REST API — the compute layer behind [Tiko](https://github.com/burmecia/tiko).**
+**Tikovm is the compute layer behind [Tiko](https://github.com/burmecia/tiko).**
 
-tikovm turns a single KVM host into a microVM platform. One daemon (`hostd`)
+Tikovm turns a single KVM host into a microVM platform. One daemon (`hostd`)
 creates VMs, runs commands inside them, snapshots them, and puts their ports on
 the network — and it takes care of the boring parts (bridges, NAT, disks, idle
 suspension) so a VM feels about as easy to start as a container, while still
 being a real VM with its own kernel.
 
 It is the compute half of the Tiko stack: [Tiko](https://github.com/burmecia/tiko)
-supplies the serverless Postgres storage engine, tikovm supplies the VMs it
+supplies the serverless Postgres storage engine, Tikovm supplies the VMs it
 runs in. The bundled demo webapp wires them together — every project gets a
 Tiko database VM that freezes when idle and wakes on the first connection.
 
@@ -21,17 +21,18 @@ Tiko database VM that freezes when idle and wakes on the first connection.
 
 ---
 
-## Why tikovm?
+## Why Tikovm?
 
 - 🧱 **VMs that feel like containers.** Create, exec, snapshot, and destroy
-  microVMs over a plain REST API. Every VM shares a read-only Ubuntu base image and gets a per-VM
-  overlay disk, so there is nothing to copy or install at create time.
+  microVMs over a plain REST API. Every VM shares a read-only Ubuntu base image
+  and gets a per-VM overlay disk, so there is nothing to copy or install at
+  create time.
 - 📴 **Scales to zero.** An idle VM is snapshotted and its Firecracker process
   exits — zero CPU, zero memory, just a snapshot file. The next request (or
-  exec, or psql connection) restores it in about a second.
+  exec, or psql connection) restores it in sub-second.
 - 🌐 **Networking you don't configure.** Each project gets its own bridge and
-  /24 subnet, created with its first VM and torn down with its last. The guest
-  IP arrives as a kernel boot argument, so eth0 is up before init runs.
+  /24 subnet, created with its first VM and torn down with its last. The VMs
+  inside the project's subnet can talk to each other with zero config.
 - 🔌 **A proxy that speaks real protocols.** HTTP reverse proxy *and* the
   Postgres wire protocol on one listener, with JWT access scoped per VM and
   port. `psql "host=<proxy> ... options='-c tikovm_token=<jwt>'"` connects
@@ -54,25 +55,25 @@ flowchart TB
   subgraph Host ["🖥️ Host (KVM, root)"]
     direction TB
     Hostd["<b>hostd</b><br/><small>REST API :3000 · proxy :8080 · networking</small>"]
-    Webapp["<b>webapp :4000</b><br/><small>projects · lambdas · PostgREST</small>"]
+    Webapp["<b>webapp :4000</b><br/><small>projects · lambdas<br/>PostgREST</small>"]
     Vmtop["<b>vmtop</b><br/><small>live TUI</small>"]
   end
 
   subgraph VM1 ["🔥 Firecracker microVM — lambda / service"]
     direction TB
-    Guest1["<b>guestd</b><br/><small>vsock :5000 · workloads · idle check</small>"]
-    App1["<b>user code</b><br/><small>node · python · postgrest</small>"]
+    Guest1["<b>guestd</b><br/><small>vsock · workloads · idle check</small>"]
+    App1["<b>user code</b><br/><small>node · python<br/>postgrest</small>"]
     Guest1 --> App1
   end
 
   subgraph VM2 ["🔥 Firecracker microVM — tiko-postgres"]
     direction TB
-    Guest2["<b>guestd</b><br/><small>vsock :5000 · pg idle check</small>"]
-    PG2["<b>PostgreSQL + Tiko</b><br/><small>S3-backed storage · COW branch</small>"]
+    Guest2["<b>guestd</b><br/><small>vsock · pg idle check</small>"]
+    PG2["<b>PostgreSQL + Tiko</b><br/><small>S3 storage · COW branch</small>"]
     Guest2 --> PG2
   end
 
-  S3[("🪣<br/><b>S3-compatible storage</b><br/>(S3 Files)<br/><small>database files · seed packs</small>")]
+  S3[("🪣<br/><b>S3 storage</b><br/>(S3 Files)<br/><small>database files · seed packs</small>")]
 
   Client -->|REST + Bearer| Hostd
   Browser --> Webapp
@@ -82,6 +83,7 @@ flowchart TB
   Hostd <-->|vsock| Guest1
   Hostd <-->|vsock| Guest2
   PG2 ==>|data · WAL · NFS| S3
+  PG1 ==>|data · NFS| S3
 
   classDef client fill:#fff7ed,stroke:#f97316,stroke-width:2px,color:#9a3412
   classDef control fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1e40af
@@ -136,10 +138,9 @@ the guest image.
 
 ## Getting started
 
-Requires a KVM-enabled Linux host (Ubuntu 24.04 x86 recommended), root (hostd
-creates bridges, iptables rules, and loop-mounts disks), a `firecracker`
-binary on `FIRECRACKER_BIN`, and libclang for the build. AWS EC2 metal
-instances or any host with nested virtualization works.
+Requires a KVM-enabled Linux host (Ubuntu 24.04 x86 recommended) and the
+`firecracker` binary on `FIRECRACKER_BIN`. AWS EC2 instances (e.g. `c8i`/`m8i`)
+or any metal instance with nested virtualization works out of the box.
 
 ```bash
 git clone https://github.com/burmecia/tikovm.git
@@ -223,10 +224,9 @@ everything suspends itself.
 
 ## Roadmap
 
-- [ ] Authentication and multi-user support in the webapp
-- [ ] Publish the Node.js client to npm
-- [ ] CI for the end-to-end suite
 - [ ] Drop `--no-seccomp` and harden the Firecracker jailer setup
+- [ ] Externalize scheduled jobs such as `pg_cron` into `hostd`
+- [ ] Add AWS FSx integration as an optional storage backend
 - [ ] Code cleanup and hardening
 
 ---
@@ -234,3 +234,4 @@ everything suspends itself.
 ## License
 
 Apache-2.0.
+

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { copyText } from '../clipboard';
 import { formatAge } from '../format';
 import type {
   ExecResult,
@@ -20,6 +21,7 @@ interface Props {
   onLoadLambda: () => Promise<LambdaDetail | null>;
   onSaveLambda: (source: string) => Promise<boolean>;
   onInvokeLambda: (body: string) => Promise<LambdaInvokeResult | null>;
+  onSmokePostgrest: () => Promise<LambdaInvokeResult | null>;
 }
 
 /** Right panel: operations on the selected VM. */
@@ -34,6 +36,7 @@ export default function RightPanel({
   onLoadLambda,
   onSaveLambda,
   onInvokeLambda,
+  onSmokePostgrest,
 }: Props) {
   const [cmd, setCmd] = useState('uname -a');
   const [sql, setSql] = useState('select version();');
@@ -121,9 +124,7 @@ export default function RightPanel({
               className={curlCopied ? 'copied' : ''}
               onClick={() => {
                 const url = `${window.location.origin}/api/demo/f/${lambda.slug}`;
-                void navigator.clipboard.writeText(
-                  `curl -X POST ${url} -d '{"hello":"world"}'`,
-                );
+                void copyText(`curl -X POST ${url} -d '{"hello":"world"}'`);
                 setCurlCopied(true);
                 setTimeout(() => setCurlCopied(false), 1500);
               }}
@@ -218,13 +219,31 @@ export default function RightPanel({
               className={pgrstCopied ? 'copied' : ''}
               onClick={() => {
                 const base = `${window.location.origin}/api/demo/pgrst/${pgrst.slug}`;
-                void navigator.clipboard.writeText(`curl ${base}/<table>`);
+                void copyText(`curl ${base}/<table>`);
                 setPgrstCopied(true);
                 setTimeout(() => setPgrstCopied(false), 1500);
               }}
               title="copy a curl command for the REST API (replace <table>)"
             >
               {pgrstCopied ? 'copied ✓' : 'copy curl command'}
+            </button>
+            <button
+              disabled={busy || pgrst.status !== 'ready'}
+              onClick={() => {
+                setBusy(true);
+                void onSmokePostgrest()
+                  .then((r) => {
+                    if (r) {
+                      setOutput(
+                        `GET /api/demo/pgrst/${pgrst.slug}/\n→ ${r.status} in ${r.durationMs}ms\n${r.body}`,
+                      );
+                    }
+                  })
+                  .finally(() => setBusy(false));
+              }}
+              title="GET the API root through the proxy — wakes the VM and proves it answers"
+            >
+              smoke test
             </button>
           </div>
           <div className="hint mono dim">
@@ -314,33 +333,29 @@ export default function RightPanel({
         </>
       )}
 
-      {!isTiko && !isLambda && !isPostgrest && (
-        <>
-          <div className="section-title">exec in guest</div>
-          <form
-            className="exec-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (cmd.trim() && !busy) {
-                void runAndShow(cmd, () => onExec(cmd));
-              }
-            }}
-          >
-            <input
-              className="mono"
-              value={cmd}
-              onChange={(e) => setCmd(e.target.value)}
-              placeholder="command to run inside the VM"
-            />
-            <button type="submit" disabled={busy || vm.state === 'destroyed'}>
-              run
-            </button>
-          </form>
-          <div className="hint dim">
-            runs as root via a login shell; a suspended VM is woken automatically
-          </div>
-        </>
-      )}
+      <div className="section-title">exec in guest</div>
+      <form
+        className="exec-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (cmd.trim() && !busy) {
+            void runAndShow(cmd, () => onExec(cmd));
+          }
+        }}
+      >
+        <input
+          className="mono"
+          value={cmd}
+          onChange={(e) => setCmd(e.target.value)}
+          placeholder="command to run inside the VM"
+        />
+        <button type="submit" disabled={busy || vm.state === 'destroyed'}>
+          run
+        </button>
+      </form>
+      <div className="hint dim">
+        runs as root via a login shell; a suspended VM is woken automatically
+      </div>
 
       {isTiko && (
         <>

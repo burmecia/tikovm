@@ -116,4 +116,34 @@ export const api = {
       durationMs: Number(res.headers.get('x-lambda-duration-ms')) || Date.now() - started,
     };
   },
+
+  // Smoke test: GET the PostgREST root (the OpenAPI spec of the public
+  // schema) through the proxy and summarize it — the raw spec is far too
+  // long to display. Non-JSON (error) bodies pass through, truncated.
+  smokePostgrest: async (slug: string): Promise<LambdaInvokeResult> => {
+    const started = Date.now();
+    const res = await fetch(`/api/demo/pgrst/${slug}/`);
+    const text = await res.text();
+    let body: string;
+    try {
+      // In PostgREST's OpenAPI output, `definitions` keys are the exposed
+      // tables/views of the schema.
+      const spec = JSON.parse(text) as { definitions?: Record<string, unknown> };
+      const tables = Object.keys(spec.definitions ?? {});
+      body = tables.length
+        ? `public schema: ${tables.length} table(s): ${tables.join(', ')}`
+        : 'public schema is empty (no tables yet)';
+    } catch {
+      body =
+        text.length > 500
+          ? `${text.slice(0, 500)}\n… (truncated, ${text.length} bytes total)`
+          : text;
+    }
+    return {
+      status: res.status,
+      body,
+      durationMs:
+        Number(res.headers.get('x-postgrest-duration-ms')) || Date.now() - started,
+    };
+  },
 };

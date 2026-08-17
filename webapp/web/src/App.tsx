@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './api';
+import { copyText } from './clipboard';
 import LeftPanel from './components/LeftPanel';
 import RightPanel from './components/RightPanel';
 import TopPanel from './components/TopPanel';
@@ -185,12 +186,34 @@ export default function App() {
                 void refresh();
               }
             }}
+            onSmokePostgrest={async () => {
+              const slug = selectedVm.postgrest?.slug;
+              if (!slug) {
+                return null;
+              }
+              try {
+                const result = await api.smokePostgrest(slug);
+                setBanner({
+                  kind: 'info',
+                  text: `postgrest ${slug} → ${result.status} in ${result.durationMs}ms`,
+                });
+                return result;
+              } catch (err) {
+                setBanner({
+                  kind: 'error',
+                  text: err instanceof Error ? err.message : String(err),
+                });
+                return null;
+              } finally {
+                void refresh();
+              }
+            }}
             onCopyConnStr={async () => {
               try {
                 const { connectionString, expiresAt } = await api.connectionString(
                   selectedVm.vmId,
                 );
-                await navigator.clipboard.writeText(connectionString);
+                await copyText(connectionString);
                 const expiry = new Date(expiresAt).toLocaleTimeString();
                 setBanner({
                   kind: 'info',

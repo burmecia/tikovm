@@ -61,8 +61,8 @@ flowchart TB
 
   subgraph VM1 ["🔥 Firecracker microVM — lambda / service"]
     direction TB
-    Guest1["<b>guestd</b><br/><small>vsock · workloads&nbsp;&nbsp;<br/>idle check</small>"]
-    App1["<b>user code&nbsp;&nbsp;</b><br/><small>node · python<br/>postgrest</small>"]
+    Guest1["<b>guestd</b><br/><small>vsock · workloads&nbsp;&nbsp;&nbsp;&nbsp;<br/>idle check</small>"]
+    App1["<b>user code&nbsp;&nbsp;</b><br/><small>node · python&nbsp;&nbsp;<br/>postgrest</small>"]
     Guest1 --> App1
   end
 
